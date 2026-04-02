@@ -1,0 +1,56 @@
+# Secrets — never commit
+.env
+*.env
+
+# Ingestion checkpoint (contains no sensitive data but is ephemeral)
+.lotad_checkpoint.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+.uv/
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# mypy
+.mypy_cache/
+
+# ruff
+.ruff_cache/
+
+# hishel HTTP cache (local SQLite)
+.cache/
+hishel_cache/
+
+# Playwright browser binaries (large, reinstalled via `playwright install`)
+ms-playwright/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Alembic — don't ignore versions, they should be committed
