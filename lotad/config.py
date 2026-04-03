@@ -21,17 +21,23 @@ class Settings(BaseSettings):
     # Anthropic
     # ------------------------------------------------------------------
     anthropic_api_key: str = Field(..., description="Anthropic API key for Claude")
-    anthropic_model: str = Field("claude-sonnet-4-6", description="Model ID for metadata extraction")
+    anthropic_model: str = Field(
+        "claude-sonnet-4-6", description="Model ID for metadata extraction"
+    )
 
     # ------------------------------------------------------------------
     # YouTube Data API v3
     # ------------------------------------------------------------------
-    youtube_api_key: str = Field(..., description="YouTube Data API v3 key (read-only, public/unlisted playlists)")
+    youtube_api_key: str = Field(
+        ..., description="YouTube Data API v3 key (read-only, public/unlisted playlists)"
+    )
 
     # ------------------------------------------------------------------
     # TouhouDB
     # ------------------------------------------------------------------
-    touhoudb_base_url: str = Field("https://touhoudb.com/api", description="TouhouDB REST API base URL")
+    touhoudb_base_url: str = Field(
+        "https://touhoudb.com/api", description="TouhouDB REST API base URL"
+    )
     touhoudb_request_timeout: float = Field(30.0, description="Per-request timeout in seconds")
     touhoudb_max_retries: int = Field(5, description="Max retry attempts per request")
     touhoudb_circuit_breaker_threshold: int = Field(
@@ -41,7 +47,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Normalization metrics cache
     # ------------------------------------------------------------------
-    normalization_ttl_hours: int = Field(24, description="Hours before normalization metrics are considered stale")
+    normalization_ttl_hours: int = Field(
+        24, description="Hours before normalization metrics are considered stale"
+    )
 
     # ------------------------------------------------------------------
     # Ingestion

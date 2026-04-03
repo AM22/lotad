@@ -12,6 +12,7 @@ def test_lotad_package_importable():
 def test_cli_importable():
     """The CLI entry point must be importable."""
     from lotad.cli.main import cli
+
     assert cli is not None
 
 

@@ -123,12 +123,8 @@ media_type_enum = sa.Enum(
 artist_type_enum = sa.Enum(
     ArtistType, name="artist_type", values_callable=lambda x: [e.value for e in x]
 )
-song_role_enum = sa.Enum(
-    SongRole, name="song_role", values_callable=lambda x: [e.value for e in x]
-)
-language_enum = sa.Enum(
-    Language, name="language", values_callable=lambda x: [e.value for e in x]
-)
+song_role_enum = sa.Enum(SongRole, name="song_role", values_callable=lambda x: [e.value for e in x])
+language_enum = sa.Enum(Language, name="language", values_callable=lambda x: [e.value for e in x])
 appearance_type_enum = sa.Enum(
     AppearanceType,
     name="appearance_type",
@@ -145,9 +141,7 @@ source_type_enum = sa.Enum(
 task_status_enum = sa.Enum(
     TaskStatus, name="task_status", values_callable=lambda x: [e.value for e in x]
 )
-task_type_enum = sa.Enum(
-    TaskType, name="task_type", values_callable=lambda x: [e.value for e in x]
-)
+task_type_enum = sa.Enum(TaskType, name="task_type", values_callable=lambda x: [e.value for e in x])
 normalization_entity_type_enum = sa.Enum(
     NormalizationEntityType,
     name="normalization_entity_type",
@@ -241,9 +235,7 @@ songs = sa.Table(
     sa.Column("touhoudb_url", sa.Text, nullable=True),
     sa.Column("arrangement_chronicle_url", sa.Text, nullable=True),
     sa.Column("has_lyrics", sa.Boolean, nullable=False, server_default="false"),
-    sa.Column(
-        "is_original_composition", sa.Boolean, nullable=False, server_default="false"
-    ),
+    sa.Column("is_original_composition", sa.Boolean, nullable=False, server_default="false"),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
@@ -322,9 +314,7 @@ tasks = sa.Table(
     sa.Column("priority", sa.Integer, nullable=False, server_default="5"),
     sa.Column("title", sa.Text, nullable=False),
     sa.Column("data", sa.JSON, nullable=False, server_default="{}"),
-    sa.Column(
-        "related_song_id", sa.Integer, sa.ForeignKey("songs.id"), nullable=True
-    ),
+    sa.Column("related_song_id", sa.Integer, sa.ForeignKey("songs.id"), nullable=True),
     sa.Column(
         "related_video_id",
         sa.Integer,
@@ -366,9 +356,7 @@ physical_albums = sa.Table(
     sa.Column("title", sa.Text, nullable=False),
     sa.Column("circle", sa.Text, nullable=True),
     sa.Column("catalog_number", sa.Text, nullable=True),
-    sa.Column(
-        "status", physical_album_status_enum, nullable=False, server_default="OWNED"
-    ),
+    sa.Column("status", physical_album_status_enum, nullable=False, server_default="OWNED"),
 )
 
 physical_tracks = sa.Table(
@@ -400,9 +388,7 @@ original_song_characters = sa.Table(
         sa.ForeignKey("original_songs.id"),
         nullable=False,
     ),
-    sa.Column(
-        "character_id", sa.Integer, sa.ForeignKey("characters.id"), nullable=False
-    ),
+    sa.Column("character_id", sa.Integer, sa.ForeignKey("characters.id"), nullable=False),
     sa.Column("confidence", confidence_enum, nullable=False, server_default="HIGH"),
     sa.PrimaryKeyConstraint("original_song_id", "character_id"),
 )
@@ -410,9 +396,7 @@ original_song_characters = sa.Table(
 character_works = sa.Table(
     "character_works",
     metadata,
-    sa.Column(
-        "character_id", sa.Integer, sa.ForeignKey("characters.id"), nullable=False
-    ),
+    sa.Column("character_id", sa.Integer, sa.ForeignKey("characters.id"), nullable=False),
     sa.Column("work_id", sa.Integer, sa.ForeignKey("works.id"), nullable=False),
     sa.Column("appearance_type", appearance_type_enum, nullable=False),
     sa.PrimaryKeyConstraint("character_id", "work_id", "appearance_type"),
@@ -421,13 +405,9 @@ character_works = sa.Table(
 artist_circles = sa.Table(
     "artist_circles",
     metadata,
-    sa.Column(
-        "artist_id", sa.Integer, sa.ForeignKey("artists.id"), nullable=False
-    ),
+    sa.Column("artist_id", sa.Integer, sa.ForeignKey("artists.id"), nullable=False),
     # circle_id references artists (circles are also rows in the artists table)
-    sa.Column(
-        "circle_id", sa.Integer, sa.ForeignKey("artists.id"), nullable=False
-    ),
+    sa.Column("circle_id", sa.Integer, sa.ForeignKey("artists.id"), nullable=False),
     sa.Column("is_primary", sa.Boolean, nullable=False, server_default="false"),
     sa.PrimaryKeyConstraint("artist_id", "circle_id"),
 )
@@ -436,9 +416,7 @@ album_circles = sa.Table(
     "album_circles",
     metadata,
     sa.Column("album_id", sa.Integer, sa.ForeignKey("albums.id"), nullable=False),
-    sa.Column(
-        "circle_id", sa.Integer, sa.ForeignKey("artists.id"), nullable=False
-    ),
+    sa.Column("circle_id", sa.Integer, sa.ForeignKey("artists.id"), nullable=False),
     sa.Column("is_primary", sa.Boolean, nullable=False, server_default="false"),
     sa.PrimaryKeyConstraint("album_id", "circle_id"),
 )
@@ -473,9 +451,7 @@ song_artists = sa.Table(
     "song_artists",
     metadata,
     sa.Column("song_id", sa.Integer, sa.ForeignKey("songs.id"), nullable=False),
-    sa.Column(
-        "artist_id", sa.Integer, sa.ForeignKey("artists.id"), nullable=False
-    ),
+    sa.Column("artist_id", sa.Integer, sa.ForeignKey("artists.id"), nullable=False),
     sa.Column("role", song_role_enum, nullable=False),
     sa.PrimaryKeyConstraint("song_id", "artist_id", "role"),
 )
@@ -505,9 +481,7 @@ song_characters = sa.Table(
     "song_characters",
     metadata,
     sa.Column("song_id", sa.Integer, sa.ForeignKey("songs.id"), nullable=False),
-    sa.Column(
-        "character_id", sa.Integer, sa.ForeignKey("characters.id"), nullable=False
-    ),
+    sa.Column("character_id", sa.Integer, sa.ForeignKey("characters.id"), nullable=False),
     sa.PrimaryKeyConstraint("song_id", "character_id"),
 )
 
@@ -516,9 +490,7 @@ playlist_songs = sa.Table(
     metadata,
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("song_id", sa.Integer, sa.ForeignKey("songs.id"), nullable=False),
-    sa.Column(
-        "playlist_id", sa.Integer, sa.ForeignKey("playlists.id"), nullable=False
-    ),
+    sa.Column("playlist_id", sa.Integer, sa.ForeignKey("playlists.id"), nullable=False),
     sa.Column(
         "youtube_video_id",
         sa.Integer,
