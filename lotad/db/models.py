@@ -28,27 +28,27 @@ metadata = MetaData(naming_convention=convention)
 # ---------------------------------------------------------------------------
 
 
-class MediaType(str, enum.Enum):
+class MediaType(enum.StrEnum):
     GAME = "GAME"
     MUSIC_CD = "MUSIC_CD"
     BOOK = "BOOK"
     OTHER = "OTHER"
 
 
-class ArtistType(str, enum.Enum):
+class ArtistType(enum.StrEnum):
     CIRCLE = "CIRCLE"
     INDIVIDUAL = "INDIVIDUAL"
     UNIT = "UNIT"
 
 
-class SongRole(str, enum.Enum):
+class SongRole(enum.StrEnum):
     ARRANGER = "ARRANGER"
     VOCALIST = "VOCALIST"
     LYRICIST = "LYRICIST"
     COMPOSER = "COMPOSER"
 
 
-class Language(str, enum.Enum):
+class Language(enum.StrEnum):
     JAPANESE = "JAPANESE"
     ENGLISH = "ENGLISH"
     CHINESE = "CHINESE"
@@ -59,7 +59,7 @@ class Language(str, enum.Enum):
     OTHER = "OTHER"
 
 
-class AppearanceType(str, enum.Enum):
+class AppearanceType(enum.StrEnum):
     PLAYABLE = "PLAYABLE"
     BOSS = "BOSS"
     MIDBOSS = "MIDBOSS"
@@ -68,25 +68,25 @@ class AppearanceType(str, enum.Enum):
     MENTIONED = "MENTIONED"
 
 
-class ConfidenceLevel(str, enum.Enum):
+class ConfidenceLevel(enum.StrEnum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
 
 
-class SourceType(str, enum.Enum):
+class SourceType(enum.StrEnum):
     INDIVIDUAL_VIDEO = "INDIVIDUAL_VIDEO"
     ALBUM_VIDEO = "ALBUM_VIDEO"
 
 
-class TaskStatus(str, enum.Enum):
+class TaskStatus(enum.StrEnum):
     OPEN = "OPEN"
     IN_PROGRESS = "IN_PROGRESS"
     RESOLVED = "RESOLVED"
     DISMISSED = "DISMISSED"
 
 
-class TaskType(str, enum.Enum):
+class TaskType(enum.StrEnum):
     FILL_MISSING_INFO = "FILL_MISSING_INFO"
     DEDUPLICATE_SONGS = "DEDUPLICATE_SONGS"
     REVIEW_ALBUM_TRACKS = "REVIEW_ALBUM_TRACKS"
@@ -101,13 +101,13 @@ class TaskType(str, enum.Enum):
     TOUHOUDB_UNREACHABLE = "TOUHOUDB_UNREACHABLE"
 
 
-class NormalizationEntityType(str, enum.Enum):
+class NormalizationEntityType(enum.StrEnum):
     ORIGINAL_SONG = "ORIGINAL_SONG"
     ARTIST = "ARTIST"
     CIRCLE = "CIRCLE"
 
 
-class PhysicalAlbumStatus(str, enum.Enum):
+class PhysicalAlbumStatus(enum.StrEnum):
     OWNED = "OWNED"
     SOLD = "SOLD"
     WISHLIST = "WISHLIST"

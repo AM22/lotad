@@ -29,8 +29,8 @@ def seed_works() -> None:
 @db.command("seed-all")
 def seed_all() -> None:
     """Run all seed scripts in dependency order."""
-    from lotad.db.seeds.works import seed as seed_works_fn
     from lotad.db.seeds.playlists import seed as seed_playlists_fn
+    from lotad.db.seeds.works import seed as seed_works_fn
 
     seed_works_fn()
     seed_playlists_fn()

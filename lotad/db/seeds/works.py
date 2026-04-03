@@ -60,6 +60,7 @@ GAMES = [
     {"name": "Unconnected Marketeers", "short_name": "UM", "media_type": "GAME", "release_year": 2021, "canonical_order": Decimal("18")},
     {"name": "100th Black Market", "short_name": "100thBM", "media_type": "GAME", "release_year": 2022, "canonical_order": Decimal("18.5"), "notes": "Spin-off"},
     {"name": "Unfinished Dream of All Living Ghost", "short_name": "UDoALG", "media_type": "GAME", "release_year": 2023, "canonical_order": Decimal("19")},
+    {"name": "Fossilized Wonders", "short_name": "FW", "media_type": "GAME", "release_year": 2025, "canonical_order": Decimal("20")},
 ]
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,8 @@ MUSIC_CDS = [
     {"name": "Neo-traditionalism of Japan", "short_name": "NtJ", "media_type": "MUSIC_CD", "release_year": 2011},
     {"name": "Dr. Latency's Freak Report", "short_name": "DLFR", "media_type": "MUSIC_CD", "release_year": 2013},
     {"name": "Dateless Bar Old Adam", "short_name": "DBOA", "media_type": "MUSIC_CD", "release_year": 2016},
-    {"name": "Violet Land", "short_name": "VL", "media_type": "MUSIC_CD", "release_year": 2020},
+    {"name": "Rainbow-Colored Septentrion", "short_name": "RCS", "media_type": "MUSIC_CD", "release_year": 2021},
+    {"name": "Taboo Japan Disentanglement", "short_name": "TJD", "media_type": "MUSIC_CD", "release_year": 2024},
 ]
 
 # ---------------------------------------------------------------------------
@@ -98,7 +100,7 @@ BOOKS = [
     {"name": "The Grimoire of Usami", "short_name": "GoU", "media_type": "BOOK", "release_year": 2019, "notes": "Guidebook; HSiFS characters"},
     {"name": "Lotus Eaters", "short_name": "LE", "media_type": "BOOK", "release_year": 2020, "notes": "Manga"},
     {"name": "Wild and Horned Hermit", "short_name": "WaHH", "media_type": "BOOK", "release_year": 2010, "notes": "Manga; Kasen introduced"},
-    {"name": "Little Princess", "short_name": "LP", "media_type": "BOOK", "release_year": 2022, "notes": "Manga"},
+    {"name": "Foul Detective Satori", "short_name": "FDS", "media_type": "BOOK", "release_year": 2019, "notes": "Manga (also called 'Cheating Detective Satori'); serialized on ComicWalker"},
     {"name": "Strange Creators of Outer World", "short_name": "SCooW", "media_type": "BOOK", "release_year": 2015, "notes": "Anthology / artbook series"},
 ]
 
@@ -131,5 +133,4 @@ def seed(engine=None) -> None:
 
 if __name__ == "__main__":
     seed()
-    import sys
     sys.exit(0)

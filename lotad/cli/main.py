@@ -4,9 +4,9 @@ import click
 
 from lotad.cli.db import db
 from lotad.cli.ingest import ingest
-from lotad.cli.tasks import tasks
 from lotad.cli.score import score
 from lotad.cli.sync import sync
+from lotad.cli.tasks import tasks
 
 
 @click.group()

@@ -3,9 +3,12 @@
 Run via: lotad db seed-playlists
 Or directly: python -m lotad.db.seeds.playlists
 
-YouTube playlist IDs are placeholders — update them with your real IDs before
-running against a production database. The IDs below are clearly fake so they
-will fail loudly if used against the YouTube API without replacement.
+Playlist hierarchy (descending quality / weight):
+  1. TOUHOU MEGAMIX — permanent favourites
+  2. pq             — pending queue; strong candidates for MEGAMIX
+  3. REVAL          — songs under revaluation (lower tier)
+  4. eval           — unscored evaluation pool
+  5. playlist 3     — liked but not good enough for any of the above
 """
 
 from __future__ import annotations
@@ -25,23 +28,29 @@ from lotad.db.session import get_engine
 PLAYLISTS = [
     {
         "name": "TOUHOU MEGAMIX",
-        "youtube_playlist_id": "PLACEHOLDER_MEGAMIX",
+        "youtube_playlist_id": "PLuDYUKEqeoaxodcKdDwsnjUBt1ZMsOa8q",
         "display_order": 1,
     },
     {
         "name": "pq",
-        "youtube_playlist_id": "PLACEHOLDER_PQ",
+        "youtube_playlist_id": "PLuDYUKEqeoaxLtr2TpS66L-LOvRhiYNnt",
         "display_order": 2,
     },
     {
         "name": "REVAL",
-        "youtube_playlist_id": "PLACEHOLDER_REVAL",
+        "youtube_playlist_id": "PLuDYUKEqeoay6kSIsCqY7KA58w--VNX7R",
         "display_order": 3,
     },
     {
         "name": "eval",
-        "youtube_playlist_id": "PLACEHOLDER_EVAL",
+        "youtube_playlist_id": "PLuDYUKEqeoazw-dcPeADU3rP0mfZ6nd3V",
         "display_order": 4,
+    },
+    {
+        # Songs worth keeping but not strong enough for REVAL/eval.
+        "name": "playlist 3",
+        "youtube_playlist_id": "PLuDYUKEqeoawK20u7vX3c6HTnn3w-9oXw",
+        "display_order": 5,
     },
 ]
 
@@ -53,6 +62,7 @@ PLAYLISTS = [
 #   pq = pending queue / strong candidates
 #   REVAL = revaluation (lower tier, to be re-evaluated)
 #   eval = evaluation (unscored, weight 0 so they don't skew results)
+#   playlist 3 = saved but not strong; weight 0 for primary analytics
 #
 # "equal" — all playlists weighted the same; useful for raw frequency analysis.
 # ---------------------------------------------------------------------------
@@ -61,13 +71,14 @@ SCORING_CONFIGURATIONS = [
     {
         "name": "default",
         "description": (
-            "Primary config. MEGAMIX songs count most, eval songs are unscored."
+            "Primary config. MEGAMIX songs count most; eval and playlist 3 are unscored."
         ),
         "weights": {
             "TOUHOU MEGAMIX": 10,
             "pq": 7,
             "REVAL": 4,
             "eval": 0,
+            "playlist 3": 0,
         },
         "is_default": True,
     },
@@ -79,6 +90,7 @@ SCORING_CONFIGURATIONS = [
             "pq": 1,
             "REVAL": 1,
             "eval": 1,
+            "playlist 3": 1,
         },
         "is_default": False,
     },
