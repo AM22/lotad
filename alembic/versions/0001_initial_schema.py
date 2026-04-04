@@ -46,7 +46,7 @@ _ENUMS = {
         "MENTIONED",
     ),
     "confidence_level": ("HIGH", "MEDIUM", "LOW"),
-    "source_type": ("INDIVIDUAL_VIDEO", "ALBUM_VIDEO"),
+    "source_type": ("INDIVIDUAL_VIDEO", "COMPOSITE_VIDEO"),
     "task_status": ("OPEN", "IN_PROGRESS", "RESOLVED", "DISMISSED"),
     "task_type": (
         "FILL_MISSING_INFO",

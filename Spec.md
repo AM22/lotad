@@ -322,7 +322,7 @@ All tables are defined in `lotad/db/models.py` and created by `alembic/versions/
 | `language` | `JAPANESE`, `ENGLISH`, `CHINESE`, `GERMAN`, `KOREAN`, `FRENCH`, `INSTRUMENTAL`, `OTHER` |
 | `appearance_type` | `PLAYABLE`, `BOSS`, `MIDBOSS`, `STAGE_ENEMY`, `SUPPORTING`, `MENTIONED` |
 | `confidence_level` | `HIGH`, `MEDIUM`, `LOW` |
-| `source_type` | `INDIVIDUAL_VIDEO`, `ALBUM_VIDEO` |
+| `source_type` | `INDIVIDUAL_VIDEO`, `COMPOSITE_VIDEO` — individual = one song per video; composite = multiple songs in one video (full albums, medleys, back-to-back tracks) |
 | `task_status` | `OPEN`, `IN_PROGRESS`, `RESOLVED`, `DISMISSED` |
 | `task_type` | `FILL_MISSING_INFO`, `DEDUPLICATE_SONGS`, `REVIEW_ALBUM_TRACKS`, `ASSIGN_PLAYLIST`, `REVIEW_CHARACTER_MAPPING`, `MISSING_LYRICIST`, `MISSING_CIRCLE`, `SUSPICIOUS_METADATA`, `DROPPED_VIDEO`, `REVIEW_LOCAL_TRACK`, `INGEST_FAILED`, `TOUHOUDB_UNREACHABLE` |
 | `normalization_entity_type` | `ORIGINAL_SONG`, `ARTIST`, `CIRCLE` |
@@ -441,7 +441,15 @@ The five playlists seeded at startup. `display_order` encodes tier (1 = highest 
 | `display_order` | integer | no | 1–5 ascending; 1 = best tier |
 
 #### `scoring_configurations`
-Named weight maps keyed by playlist name. `is_default = true` on exactly one row. `weights` is JSON: `{"TOUHOU MEGAMIX": 10, "pq": 7, "REVAL": 4, "eval": 0, "playlist 3": 0}`.
+Named weight maps keyed by playlist name. `is_default = true` on exactly one row. `weights` is JSON mapping playlist name to a numeric weight. Three configs are seeded:
+
+| Config | Semantic | Example weights |
+|--------|----------|-----------------|
+| `default` | Additive/frequency model — points per playlist tier | MEGAMIX=10, pq=7, REVAL=4, playlist 3=1, eval=0 |
+| `ten_point` | Rating model — playlist tier as score out of 10 | MEGAMIX=10, pq=8.5, REVAL=7, playlist 3=5, eval=0 |
+| `equal` | All evaluated playlists equal weight | MEGAMIX=pq=REVAL=playlist 3=1, eval=0 |
+
+Future: weights should be tweakable without code changes — a config store or env-level override so the user can experiment with logarithmic/exponential scales (not yet implemented; currently hard-coded in the seed script).
 
 | Column | Type | Nullable | Notes |
 |--------|------|----------|-------|
@@ -641,7 +649,7 @@ Each bullet below corresponds to roughly one implementable unit of work (think: 
 - [ ] Upsert `youtube_videos` row on every call regardless of match status
 - [ ] On TouhouDB match: call `map_song_detail_to_db`; create `playlist_songs` row; create `album_tracks` row if album video; handle album video: call `map_album_detail_to_db`, create per-song `album_tracks` rows with timestamps
 - [ ] Deduplication check: before inserting `playlist_songs`, check if `song_id` already exists in any playlist; if so, create `DEDUPLICATE_SONGS` task and continue (do not skip the write — create the row with `source_type` flagged, let task resolution handle cleanup)
-- [ ] Source-flag conflict resolution: if existing row has `source_type = ALBUM_VIDEO` and new is `INDIVIDUAL_VIDEO`, overwrite silently (individual video is a more specific match); reverse case surfaces task
+- [ ] Source-flag conflict resolution: if existing row has `source_type = COMPOSITE_VIDEO` and new is `INDIVIDUAL_VIDEO`, overwrite silently (individual video is a more specific match); reverse case surfaces task
 
 **CLI**
 - [ ] Implement `lotad ingest playlist <youtube-playlist-id>` — invokes pipeline for all videos in playlist; `--resume` flag; `--limit N` for testing
@@ -849,7 +857,7 @@ Items not yet scoped in detail but explicitly supported by the schema and archit
 
 | Option | Pros | Cons | Decision |
 |--------|------|------|----------|
-| **Always surface a task (chosen)** | No silent data loss; user makes final call on which video to keep | More tasks to review | ✅ Chosen; source-flag exception for ALBUM_VIDEO → INDIVIDUAL_VIDEO overwrites |
+| **Always surface a task (chosen)** | No silent data loss; user makes final call on which video to keep | More tasks to review | ✅ Chosen; source-flag exception for COMPOSITE_VIDEO → INDIVIDUAL_VIDEO overwrites |
 | Playlist hierarchy auto-resolution (MEGAMIX wins) | Zero human review needed | Risky: a "worse" playlist entry might be a different song version or a better upload quality | ❌ |
 | Last-write-wins | Simple | Arbitrary outcome depending on ingest order | ❌ |
 

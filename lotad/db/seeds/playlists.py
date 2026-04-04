@@ -4,7 +4,7 @@ Run via: lotad db seed-playlists
 Or directly: python -m lotad.db.seeds.playlists
 
 Playlist hierarchy (descending quality / weight):
-  1. TOUHOU MEGAMIX — permanent favourites
+  1. TOUHOU MEGAMIX — permanent favorites
   2. pq             — pending queue; strong candidates for MEGAMIX
   3. REVAL          — songs under revaluation (lower tier)
   4. playlist 3     — saved songs (~5/10); evaluated and liked but below REVAL bar
@@ -58,20 +58,39 @@ PLAYLISTS = [
 # ---------------------------------------------------------------------------
 # Scoring configurations
 #
-# "default" — intended for primary analytics. Weights reflect playlist tiers:
-#   TOUHOU MEGAMIX = permanent favourites (highest weight)
-#   pq = pending queue / strong candidates
-#   REVAL = revaluation (lower tier, to be re-evaluated)
-#   playlist 3 = saved and evaluated (~5/10); gets a small positive weight
-#   eval = unlistened queue; weight 0 — not yet evaluated, should not influence scores
+# Semantic distinction between configs:
 #
-# "equal" — all playlists weighted the same; useful for raw frequency analysis.
+# "default" — additive / frequency model. Each playlist contributes a number
+#   of "points" when aggregating across a body of work. A song that appears in
+#   MEGAMIX and REVAL accumulates points from both. Use this config when you
+#   care about "how strongly is this original song represented in my collection
+#   overall?" Weights are not on a fixed scale.
+#     TOUHOU MEGAMIX  = 10 (highest)
+#     pq              = 7
+#     REVAL           = 4
+#     playlist 3      = 1 (evaluated and liked, ~5/10)
+#     eval            = 0 (unlistened — must not influence scores)
+#
+# "ten_point" — rating model. Treat the playlist tier as a score out of 10.
+#   Use this config when you want a single number representing "how much do I
+#   like this song?" rather than a frequency aggregate. Semantically: a song
+#   in MEGAMIX is a 10/10, pq is an 8.5, etc.
+#     TOUHOU MEGAMIX  = 10
+#     pq              = 8.5
+#     REVAL           = 7
+#     playlist 3      = 5
+#     eval            = 0 (unlistened — no score assigned)
+#
+# "equal" — all evaluated playlists weighted the same. Useful for raw
+#   frequency analysis where tier doesn't matter, only presence.
 # ---------------------------------------------------------------------------
 
 SCORING_CONFIGURATIONS = [
     {
         "name": "default",
-        "description": ("Primary config. MEGAMIX songs count most; eval (unlistened) is unscored."),
+        "description": (
+            "Additive/frequency model. Each playlist tier adds points; eval (unlistened) scores 0."
+        ),
         "weights": {
             "TOUHOU MEGAMIX": 10,
             "pq": 7,
@@ -82,14 +101,29 @@ SCORING_CONFIGURATIONS = [
         "is_default": True,
     },
     {
+        "name": "ten_point",
+        "description": (
+            "Rating model. Playlist tier = score out of 10. "
+            "Use for per-song scoring rather than frequency aggregation."
+        ),
+        "weights": {
+            "TOUHOU MEGAMIX": 10,
+            "pq": 8.5,
+            "REVAL": 7,
+            "playlist 3": 5,
+            "eval": 0,
+        },
+        "is_default": False,
+    },
+    {
         "name": "equal",
-        "description": "All playlists weighted equally. Use for raw frequency stats.",
+        "description": ("All evaluated playlists weighted equally. Use for raw frequency stats."),
         "weights": {
             "TOUHOU MEGAMIX": 1,
             "pq": 1,
             "REVAL": 1,
-            "eval": 1,
             "playlist 3": 1,
+            "eval": 0,
         },
         "is_default": False,
     },

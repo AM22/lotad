@@ -76,7 +76,7 @@ class ConfidenceLevel(enum.StrEnum):
 
 class SourceType(enum.StrEnum):
     INDIVIDUAL_VIDEO = "INDIVIDUAL_VIDEO"
-    ALBUM_VIDEO = "ALBUM_VIDEO"
+    COMPOSITE_VIDEO = "COMPOSITE_VIDEO"
 
 
 class TaskStatus(enum.StrEnum):
