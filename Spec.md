@@ -317,8 +317,8 @@ All tables are defined in `lotad/db/models.py` and created by `alembic/versions/
 | Enum | Values |
 |------|--------|
 | `media_type` | `GAME`, `MUSIC_CD`, `BOOK`, `OTHER` |
-| `artist_type` | `CIRCLE`, `INDIVIDUAL`, `UNIT` |
-| `song_role` | `ARRANGER`, `VOCALIST`, `LYRICIST`, `COMPOSER` |
+| `artist_type` | `CIRCLE`, `INDIVIDUAL`, `UNIT`, `LABEL`, `VOCALIST` |
+| `song_role` | `ARRANGER`, `VOCALIST`, `LYRICIST`, `COMPOSER`, `INSTRUMENTALIST`, `MIXER`, `MASTERING`, `CHORUS` |
 | `language` | `JAPANESE`, `ENGLISH`, `CHINESE`, `GERMAN`, `KOREAN`, `FRENCH`, `INSTRUMENTAL`, `OTHER` |
 | `appearance_type` | `PLAYABLE`, `BOSS`, `MIDBOSS`, `STAGE_ENEMY`, `SUPPORTING`, `MENTIONED` |
 | `confidence_level` | `HIGH`, `MEDIUM`, `LOW` |
@@ -327,6 +327,8 @@ All tables are defined in `lotad/db/models.py` and created by `alembic/versions/
 | `task_type` | `FILL_MISSING_INFO`, `DEDUPLICATE_SONGS`, `REVIEW_ALBUM_TRACKS`, `ASSIGN_PLAYLIST`, `REVIEW_CHARACTER_MAPPING`, `MISSING_LYRICIST`, `MISSING_CIRCLE`, `SUSPICIOUS_METADATA`, `DROPPED_VIDEO`, `REVIEW_LOCAL_TRACK`, `INGEST_FAILED`, `TOUHOUDB_UNREACHABLE` |
 | `normalization_entity_type` | `ORIGINAL_SONG`, `ARTIST`, `CIRCLE` |
 | `physical_album_status` | `OWNED`, `SOLD`, `WISHLIST` |
+| `SongType` | `ARRANGEMENT`, `REARRANGEMENT`, `REMIX`, `COVER`, `MASHUP`, `INSTRUMENTAL`, `ORIGINAL`, `REMASTER`, `LIVE`, `SHORT_VERSION`, `OTHER` — mirrors TouhouDB's SongType. Most LOTAD entries are `ARRANGEMENT`. `REARRANGEMENT` is an arrangement of an existing arrangement. `INSTRUMENTAL` means an instrumental version exists for a vocal song. `ORIGINAL` for non-Touhou originals. |
+| `DiscType` | `ALBUM`, `SINGLE`, `EP`, `SPLIT`, `COMPILATION`, `GAME`, `FANMADE`, `INSTRUMENTAL`, `VIDEO`, `OTHER` — mirrors TouhouDB's DiscType. `GAME` for ZUN's official game OSTs; `FANMADE` for unofficial fan game OSTs. |
 
 ### Core reference tables
 
@@ -395,6 +397,9 @@ Doujin/commercial albums. An album has zero or more circles (via `album_circles`
 | `release_date` | date | yes | |
 | `catalog_number` | text | yes | |
 | `touhoudb_url` | text | yes | |
+| `disc_type` | DiscType | no | default ALBUM |
+| `description` | text | yes | |
+| `barcode` | text | yes | |
 
 #### `songs`
 The core entity. One row = one arrangement. May appear in multiple playlists (via `playlist_songs`) and on multiple albums (via `album_tracks`). `is_original_composition = true` for songs that are not Touhou arrangements (e.g. Sanae-san).
@@ -413,6 +418,10 @@ The core entity. One row = one arrangement. May appear in multiple playlists (vi
 | `created_at` | timestamptz | no | |
 | `updated_at` | timestamptz | no | |
 | `notes` | text | yes | |
+| `song_type` | SongType | no | default ARRANGEMENT |
+| `publish_date` | date | yes | Official release date (may differ from album release_date) |
+| `min_milli_bpm` | integer | yes | BPM stored as millibpm (e.g. 174000 = 174 BPM); mirrors TouhouDB |
+| `max_milli_bpm` | integer | yes | Upper bound for variable-tempo songs; equals min_milli_bpm for fixed tempo |
 
 #### `youtube_videos`
 Tracks a single YouTube video (11-char ID). A video may be linked from multiple songs (album video with timestamps) or playlists. `is_available` goes false when 404/410 is detected during sync. `last_checked_at` is updated every sync run; `updated_at` only changes when a data field changes.
@@ -509,6 +518,8 @@ Tracks physical CD collection. `physical_albums` may or may not be linked to an 
 | `song_originals` | (`song_id`, `original_song_id`) | Original ZUN song(s) being arranged. Medleys get multiple rows. |
 | `song_characters` | (`song_id`, `character_id`) | Characters associated with an *arrangement* specifically (for original compositions like Sanae-san, or character-focused arranges not reflected by the original song). |
 | `playlist_songs` | unique (`song_id`, `playlist_id`, `removed_at`) | A song's presence in a playlist at a point in time. `removed_at` is null for current entries. `source_type` distinguishes individual video vs. album video. `rank` is the fine-grained user rank within the playlist. |
+| `song_tags` | (`song_id`, `tag` text, `count` int) | Freeform genre/mood tags sourced from TouhouDB; `count` reflects tag vote weight. |
+| `album_tags` | (`album_id`, `tag` text, `count` int) | Same as song_tags but for albums. |
 
 ### Indexes
 
