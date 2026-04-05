@@ -37,15 +37,52 @@ class MediaType(enum.StrEnum):
 
 class ArtistType(enum.StrEnum):
     CIRCLE = "CIRCLE"
-    INDIVIDUAL = "INDIVIDUAL"
-    UNIT = "UNIT"
+    LABEL = "LABEL"  # distributes/releases music but doesn't produce it
+    INDIVIDUAL = "INDIVIDUAL"  # producer / arranger not primarily associated with a circle
+    VOCALIST = "VOCALIST"  # human vocalist (solo, not bound to one circle)
+    UNIT = "UNIT"  # ad-hoc collaboration group
 
 
 class SongRole(enum.StrEnum):
     ARRANGER = "ARRANGER"
+    COMPOSER = "COMPOSER"
     VOCALIST = "VOCALIST"
     LYRICIST = "LYRICIST"
-    COMPOSER = "COMPOSER"
+    INSTRUMENTALIST = "INSTRUMENTALIST"
+    MIXER = "MIXER"
+    MASTERING = "MASTERING"
+    CHORUS = "CHORUS"  # backing vocals
+
+
+class SongType(enum.StrEnum):
+    """Mirrors TouhouDB SongType. Most LOTAD entries will be ARRANGEMENT."""
+
+    ARRANGEMENT = "ARRANGEMENT"  # standard Touhou arrangement
+    REARRANGEMENT = "REARRANGEMENT"  # arrange of an existing arrangement (TouhouDB-specific)
+    REMIX = "REMIX"
+    COVER = "COVER"
+    MASHUP = "MASHUP"
+    INSTRUMENTAL = "INSTRUMENTAL"  # vocal version exists but this is the instrumental
+    ORIGINAL = "ORIGINAL"  # original composition (not a Touhou arrangement)
+    REMASTER = "REMASTER"
+    LIVE = "LIVE"
+    SHORT_VERSION = "SHORT_VERSION"  # TouhouDB-specific
+    OTHER = "OTHER"
+
+
+class DiscType(enum.StrEnum):
+    """Album release format. Mirrors TouhouDB DiscType."""
+
+    ALBUM = "ALBUM"
+    SINGLE = "SINGLE"
+    EP = "EP"
+    SPLIT = "SPLIT"
+    COMPILATION = "COMPILATION"
+    GAME = "GAME"  # TouhouDB-specific — ZUN's game OSTs
+    FANMADE = "FANMADE"  # TouhouDB-specific — unofficial fan game OSTs
+    INSTRUMENTAL = "INSTRUMENTAL"  # all-instrumental album
+    VIDEO = "VIDEO"
+    OTHER = "OTHER"
 
 
 class Language(enum.StrEnum):
@@ -152,6 +189,8 @@ physical_album_status_enum = sa.Enum(
     name="physical_album_status",
     values_callable=lambda x: [e.value for e in x],
 )
+song_type_enum = sa.Enum(SongType, name="song_type", values_callable=lambda x: [e.value for e in x])
+disc_type_enum = sa.Enum(DiscType, name="disc_type", values_callable=lambda x: [e.value for e in x])
 
 # ---------------------------------------------------------------------------
 # Core lookup / reference tables
@@ -222,6 +261,10 @@ albums = sa.Table(
     sa.Column("release_date", sa.Date, nullable=True),
     sa.Column("catalog_number", sa.Text, nullable=True),
     sa.Column("touhoudb_url", sa.Text, nullable=True),
+    # TouhouDB-aligned fields
+    sa.Column("disc_type", disc_type_enum, nullable=False, server_default="ALBUM"),
+    sa.Column("description", sa.Text, nullable=True),
+    sa.Column("barcode", sa.Text, nullable=True),
 )
 
 songs = sa.Table(
@@ -236,6 +279,17 @@ songs = sa.Table(
     sa.Column("arrangement_chronicle_url", sa.Text, nullable=True),
     sa.Column("has_lyrics", sa.Boolean, nullable=False, server_default="false"),
     sa.Column("is_original_composition", sa.Boolean, nullable=False, server_default="false"),
+    # TouhouDB-aligned fields
+    sa.Column(
+        "song_type",
+        song_type_enum,
+        nullable=False,
+        server_default="ARRANGEMENT",
+    ),
+    sa.Column("publish_date", sa.Date, nullable=True),
+    # BPM stored as millibpm integers (e.g. 174000 = 174 BPM) — mirrors TouhouDB
+    sa.Column("min_milli_bpm", sa.Integer, nullable=True),
+    sa.Column("max_milli_bpm", sa.Integer, nullable=True),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
@@ -483,6 +537,27 @@ song_characters = sa.Table(
     sa.Column("song_id", sa.Integer, sa.ForeignKey("songs.id"), nullable=False),
     sa.Column("character_id", sa.Integer, sa.ForeignKey("characters.id"), nullable=False),
     sa.PrimaryKeyConstraint("song_id", "character_id"),
+)
+
+# Tags: freeform genre/mood labels (mirrors TouhouDB's tag system)
+# Using text rather than a foreign key to a tags table — LOTAD doesn't need
+# a curated tag vocabulary; tags flow in from TouhouDB as-is.
+song_tags = sa.Table(
+    "song_tags",
+    metadata,
+    sa.Column("song_id", sa.Integer, sa.ForeignKey("songs.id"), nullable=False),
+    sa.Column("tag", sa.Text, nullable=False),
+    sa.Column("count", sa.Integer, nullable=False, server_default="1"),
+    sa.PrimaryKeyConstraint("song_id", "tag"),
+)
+
+album_tags = sa.Table(
+    "album_tags",
+    metadata,
+    sa.Column("album_id", sa.Integer, sa.ForeignKey("albums.id"), nullable=False),
+    sa.Column("tag", sa.Text, nullable=False),
+    sa.Column("count", sa.Integer, nullable=False, server_default="1"),
+    sa.PrimaryKeyConstraint("album_id", "tag"),
 )
 
 playlist_songs = sa.Table(

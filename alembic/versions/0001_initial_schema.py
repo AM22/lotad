@@ -8,6 +8,7 @@ Create Date: 2026-04-02
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic
@@ -124,9 +125,7 @@ def upgrade() -> None:
         sa.Column("duration_seconds", sa.Integer, nullable=True),
         sa.Column("touhoudb_url", sa.Text, nullable=True),
         sa.Column("arrangement_chronicle_url", sa.Text, nullable=True),
-        sa.Column(
-            "has_lyrics", sa.Boolean, nullable=False, server_default=sa.false()
-        ),
+        sa.Column("has_lyrics", sa.Boolean, nullable=False, server_default=sa.false()),
         sa.Column(
             "is_original_composition",
             sa.Boolean,
@@ -157,9 +156,7 @@ def upgrade() -> None:
         sa.Column("channel_name", sa.Text, nullable=True),
         sa.Column("description", sa.Text, nullable=True),
         sa.Column("duration_seconds", sa.Integer, nullable=True),
-        sa.Column(
-            "is_available", sa.Boolean, nullable=False, server_default=sa.true()
-        ),
+        sa.Column("is_available", sa.Boolean, nullable=False, server_default=sa.true()),
         sa.Column("last_checked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "updated_at",
@@ -183,9 +180,7 @@ def upgrade() -> None:
         sa.Column("name", sa.Text, nullable=False, unique=True),
         sa.Column("description", sa.Text, nullable=True),
         sa.Column("weights", sa.JSON, nullable=False),
-        sa.Column(
-            "is_default", sa.Boolean, nullable=False, server_default=sa.false()
-        ),
+        sa.Column("is_default", sa.Boolean, nullable=False, server_default=sa.false()),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -197,9 +192,7 @@ def upgrade() -> None:
     op.create_table(
         "normalization_metrics",
         sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column(
-            "entity_type", _enum("normalization_entity_type"), nullable=False
-        ),
+        sa.Column("entity_type", _enum("normalization_entity_type"), nullable=False),
         sa.Column("entity_id", sa.Integer, nullable=False),
         sa.Column("total_arrange_count", sa.Integer, nullable=False),
         sa.Column(
@@ -208,9 +201,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.func.now(),
         ),
-        sa.UniqueConstraint(
-            "entity_type", "entity_id", name="uq_normalization_entity"
-        ),
+        sa.UniqueConstraint("entity_type", "entity_id", name="uq_normalization_entity"),
     )
 
     # ------------------------------------------------------------------
@@ -231,12 +222,8 @@ def upgrade() -> None:
         ),
         sa.Column("stage", sa.Integer, nullable=True),
         sa.Column("track_number", sa.Integer, nullable=True),
-        sa.Column(
-            "is_boss", sa.Boolean, nullable=False, server_default=sa.false()
-        ),
-        sa.Column(
-            "is_extra_stage", sa.Boolean, nullable=False, server_default=sa.false()
-        ),
+        sa.Column("is_boss", sa.Boolean, nullable=False, server_default=sa.false()),
+        sa.Column("is_extra_stage", sa.Boolean, nullable=False, server_default=sa.false()),
         sa.Column("notes", sa.Text, nullable=True),
     )
 
@@ -254,9 +241,7 @@ def upgrade() -> None:
             ),
             nullable=True,
         ),
-        sa.Column(
-            "is_playable", sa.Boolean, nullable=False, server_default=sa.false()
-        ),
+        sa.Column("is_playable", sa.Boolean, nullable=False, server_default=sa.false()),
         sa.Column("notes", sa.Text, nullable=True),
     )
 
@@ -358,9 +343,7 @@ def upgrade() -> None:
         sa.Column(
             "character_id",
             sa.Integer,
-            sa.ForeignKey(
-                "characters.id", name="fk_character_works_character_id_characters"
-            ),
+            sa.ForeignKey("characters.id", name="fk_character_works_character_id_characters"),
             nullable=False,
         ),
         sa.Column(
@@ -383,25 +366,17 @@ def upgrade() -> None:
         sa.Column(
             "artist_id",
             sa.Integer,
-            sa.ForeignKey(
-                "artists.id", name="fk_artist_circles_artist_id_artists"
-            ),
+            sa.ForeignKey("artists.id", name="fk_artist_circles_artist_id_artists"),
             nullable=False,
         ),
         sa.Column(
             "circle_id",
             sa.Integer,
-            sa.ForeignKey(
-                "artists.id", name="fk_artist_circles_circle_id_artists"
-            ),
+            sa.ForeignKey("artists.id", name="fk_artist_circles_circle_id_artists"),
             nullable=False,
         ),
-        sa.Column(
-            "is_primary", sa.Boolean, nullable=False, server_default=sa.false()
-        ),
-        sa.PrimaryKeyConstraint(
-            "artist_id", "circle_id", name="pk_artist_circles"
-        ),
+        sa.Column("is_primary", sa.Boolean, nullable=False, server_default=sa.false()),
+        sa.PrimaryKeyConstraint("artist_id", "circle_id", name="pk_artist_circles"),
     )
 
     op.create_table(
@@ -409,25 +384,17 @@ def upgrade() -> None:
         sa.Column(
             "album_id",
             sa.Integer,
-            sa.ForeignKey(
-                "albums.id", name="fk_album_circles_album_id_albums"
-            ),
+            sa.ForeignKey("albums.id", name="fk_album_circles_album_id_albums"),
             nullable=False,
         ),
         sa.Column(
             "circle_id",
             sa.Integer,
-            sa.ForeignKey(
-                "artists.id", name="fk_album_circles_circle_id_artists"
-            ),
+            sa.ForeignKey("artists.id", name="fk_album_circles_circle_id_artists"),
             nullable=False,
         ),
-        sa.Column(
-            "is_primary", sa.Boolean, nullable=False, server_default=sa.false()
-        ),
-        sa.PrimaryKeyConstraint(
-            "album_id", "circle_id", name="pk_album_circles"
-        ),
+        sa.Column("is_primary", sa.Boolean, nullable=False, server_default=sa.false()),
+        sa.PrimaryKeyConstraint("album_id", "circle_id", name="pk_album_circles"),
     )
 
     op.create_table(
@@ -435,9 +402,7 @@ def upgrade() -> None:
         sa.Column(
             "album_id",
             sa.Integer,
-            sa.ForeignKey(
-                "albums.id", name="fk_album_events_album_id_albums"
-            ),
+            sa.ForeignKey("albums.id", name="fk_album_events_album_id_albums"),
             nullable=False,
         ),
         sa.Column("event_name", sa.Text, nullable=False),
@@ -450,9 +415,7 @@ def upgrade() -> None:
         sa.Column(
             "album_id",
             sa.Integer,
-            sa.ForeignKey(
-                "albums.id", name="fk_album_tracks_album_id_albums"
-            ),
+            sa.ForeignKey("albums.id", name="fk_album_tracks_album_id_albums"),
             nullable=False,
         ),
         sa.Column(
@@ -462,9 +425,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("track_number", sa.Integer, nullable=False),
-        sa.Column(
-            "disc_number", sa.Integer, nullable=False, server_default="1"
-        ),
+        sa.Column("disc_number", sa.Integer, nullable=False, server_default="1"),
         sa.Column(
             "youtube_video_id",
             sa.Integer,
@@ -494,15 +455,11 @@ def upgrade() -> None:
         sa.Column(
             "artist_id",
             sa.Integer,
-            sa.ForeignKey(
-                "artists.id", name="fk_song_artists_artist_id_artists"
-            ),
+            sa.ForeignKey("artists.id", name="fk_song_artists_artist_id_artists"),
             nullable=False,
         ),
         sa.Column("role", _enum("song_role"), nullable=False),
-        sa.PrimaryKeyConstraint(
-            "song_id", "artist_id", "role", name="pk_song_artists"
-        ),
+        sa.PrimaryKeyConstraint("song_id", "artist_id", "role", name="pk_song_artists"),
     )
 
     op.create_table(
@@ -510,15 +467,11 @@ def upgrade() -> None:
         sa.Column(
             "song_id",
             sa.Integer,
-            sa.ForeignKey(
-                "songs.id", name="fk_song_languages_song_id_songs"
-            ),
+            sa.ForeignKey("songs.id", name="fk_song_languages_song_id_songs"),
             nullable=False,
         ),
         sa.Column("language", _enum("language"), nullable=False),
-        sa.PrimaryKeyConstraint(
-            "song_id", "language", name="pk_song_languages"
-        ),
+        sa.PrimaryKeyConstraint("song_id", "language", name="pk_song_languages"),
     )
 
     op.create_table(
@@ -526,9 +479,7 @@ def upgrade() -> None:
         sa.Column(
             "song_id",
             sa.Integer,
-            sa.ForeignKey(
-                "songs.id", name="fk_song_originals_song_id_songs"
-            ),
+            sa.ForeignKey("songs.id", name="fk_song_originals_song_id_songs"),
             nullable=False,
         ),
         sa.Column(
@@ -540,9 +491,7 @@ def upgrade() -> None:
             ),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint(
-            "song_id", "original_song_id", name="pk_song_originals"
-        ),
+        sa.PrimaryKeyConstraint("song_id", "original_song_id", name="pk_song_originals"),
     )
 
     op.create_table(
@@ -550,9 +499,7 @@ def upgrade() -> None:
         sa.Column(
             "song_id",
             sa.Integer,
-            sa.ForeignKey(
-                "songs.id", name="fk_song_characters_song_id_songs"
-            ),
+            sa.ForeignKey("songs.id", name="fk_song_characters_song_id_songs"),
             nullable=False,
         ),
         sa.Column(
@@ -564,9 +511,7 @@ def upgrade() -> None:
             ),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint(
-            "song_id", "character_id", name="pk_song_characters"
-        ),
+        sa.PrimaryKeyConstraint("song_id", "character_id", name="pk_song_characters"),
     )
 
     op.create_table(
@@ -586,9 +531,7 @@ def upgrade() -> None:
         sa.Column(
             "song_id",
             sa.Integer,
-            sa.ForeignKey(
-                "songs.id", name="fk_physical_tracks_song_id_songs"
-            ),
+            sa.ForeignKey("songs.id", name="fk_physical_tracks_song_id_songs"),
             nullable=True,
         ),
     )
@@ -599,17 +542,13 @@ def upgrade() -> None:
         sa.Column(
             "song_id",
             sa.Integer,
-            sa.ForeignKey(
-                "songs.id", name="fk_playlist_songs_song_id_songs"
-            ),
+            sa.ForeignKey("songs.id", name="fk_playlist_songs_song_id_songs"),
             nullable=False,
         ),
         sa.Column(
             "playlist_id",
             sa.Integer,
-            sa.ForeignKey(
-                "playlists.id", name="fk_playlist_songs_playlist_id_playlists"
-            ),
+            sa.ForeignKey("playlists.id", name="fk_playlist_songs_playlist_id_playlists"),
             nullable=False,
         ),
         sa.Column(
@@ -643,13 +582,9 @@ def upgrade() -> None:
     # Indexes for common query patterns
     # ------------------------------------------------------------------
 
-    op.create_index(
-        "ix_playlist_songs_playlist_id", "playlist_songs", ["playlist_id"]
-    )
+    op.create_index("ix_playlist_songs_playlist_id", "playlist_songs", ["playlist_id"])
     op.create_index("ix_playlist_songs_song_id", "playlist_songs", ["song_id"])
-    op.create_index(
-        "ix_playlist_songs_removed_at", "playlist_songs", ["removed_at"]
-    )
+    op.create_index("ix_playlist_songs_removed_at", "playlist_songs", ["removed_at"])
     op.create_index("ix_tasks_status", "tasks", ["status"])
     op.create_index("ix_tasks_task_type", "tasks", ["task_type"])
     op.create_index(
