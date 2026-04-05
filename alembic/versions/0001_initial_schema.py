@@ -69,17 +69,11 @@ _ENUMS = {
 
 
 def _enum(name: str, **kwargs) -> sa.Enum:
-    """Return an sa.Enum referencing an already-created DB type."""
-    return sa.Enum(*_ENUMS[name], name=name, create_type=False, **kwargs)
+    """Return an sa.Enum that SA will auto-create when its table is created."""
+    return sa.Enum(*_ENUMS[name], name=name, **kwargs)
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-
-    # Create all custom enum types (no-op for SQLite)
-    for name, values in _ENUMS.items():
-        sa.Enum(*values, name=name).create(bind, checkfirst=True)
-
     # ------------------------------------------------------------------
     # Standalone / root tables (no FK dependencies)
     # ------------------------------------------------------------------
