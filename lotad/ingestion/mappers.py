@@ -382,6 +382,19 @@ def link_song_originals(
     Returns the list of ``original_songs.id`` values that were successfully
     linked.  IDs that have no matching ``original_songs`` row are silently
     skipped here — the caller should surface a task.
+
+    KNOWN LIMITATION: The seeded ``original_songs`` rows have
+    ``touhoudb_id = NULL`` (they were seeded from game names, not TouhouDB).
+    Until ``touhoudb_id`` is backfilled, every call to this function returns
+    an empty list and the pipeline creates a FILL_MISSING_INFO task for every
+    matched song.
+
+    TODO (M5 — original song backfill): Add a one-time migration step that:
+    1. Fetches each original song from TouhouDB by name + work title.
+    2. Fuzzy-matches against our seeded ``original_songs`` rows.
+    3. Sets ``original_songs.touhoudb_id`` for confirmed matches.
+    After that step, this function will start returning non-empty lists and
+    ``song_originals`` will be populated correctly.
     """
     from lotad.db.models import song_originals  # avoid circular at module level
 

@@ -123,12 +123,13 @@ class TouhouDBClient:
                 with attempt:
                     response = await self._http.get(path, params=params)
                     response.raise_for_status()
+                    # Record success here — the ``else`` clause on try/except
+                    # is dead code when ``return`` is inside the try block.
+                    self._circuit_breaker.record_success()
                     return response.json()
         except Exception:
             self._circuit_breaker.record_failure()
             raise
-        else:
-            self._circuit_breaker.record_success()
 
     # ------------------------------------------------------------------
     # Public API
@@ -156,42 +157,27 @@ class TouhouDBClient:
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
+                # 404 means "no match" — the API responded correctly, so
+                # treat this as a success from the circuit-breaker's perspective.
+                self._circuit_breaker.record_success()
                 logger.debug("No TouhouDB match for YouTube video %s", video_id)
                 return None
             raise
-        # Record success after successful _get (retry block above handles it
-        # for failures; we need to record success here explicitly)
-        self._circuit_breaker.record_success()
         return SongDetail.model_validate(data)
 
     async def get_song(self, song_id: int) -> SongDetail:
         """Fetch full song detail by TouhouDB song ID."""
-        data = await self._get(
-            f"/songs/{song_id}",
-            fields=_SONG_FIELDS,
-            lang="Default",
-        )
-        self._circuit_breaker.record_success()
+        data = await self._get(f"/songs/{song_id}", fields=_SONG_FIELDS, lang="Default")
         return SongDetail.model_validate(data)
 
     async def get_album(self, album_id: int) -> AlbumDetail:
         """Fetch full album detail by TouhouDB album ID."""
-        data = await self._get(
-            f"/albums/{album_id}",
-            fields=_ALBUM_FIELDS,
-            lang="Default",
-        )
-        self._circuit_breaker.record_success()
+        data = await self._get(f"/albums/{album_id}", fields=_ALBUM_FIELDS, lang="Default")
         return AlbumDetail.model_validate(data)
 
     async def get_artist(self, artist_id: int) -> ArtistDetail:
         """Fetch full artist detail by TouhouDB artist ID."""
-        data = await self._get(
-            f"/artists/{artist_id}",
-            fields=_ARTIST_FIELDS,
-            lang="Default",
-        )
-        self._circuit_breaker.record_success()
+        data = await self._get(f"/artists/{artist_id}", fields=_ARTIST_FIELDS, lang="Default")
         return ArtistDetail.model_validate(data)
 
     async def resolve_original_chain(
@@ -211,10 +197,17 @@ class TouhouDBClient:
 
         Handles:
         - Cycles (via visited set)
-        - Medleys / multiple originals (follows all branches if a song links
-          to multiple originals — TouhouDB models this differently, so for
-          now we follow just ``originalVersionId``)
         - Max depth (returns current node if depth exceeded)
+
+        TODO (M5 — multiple originals): TouhouDB's schema only has one
+        ``originalVersionId`` FK, but medleys and mashups draw from multiple
+        Touhou source themes.  The additional originals are encoded in the
+        song's description or unofficial links when the ``multiple originals``
+        tag is present.  Once we reach the leaf node, check for that tag and,
+        if set, parse the description / TouhouDB reference link to extract the
+        full list of originals.  This requires either regex parsing of the
+        description field or following the "TouhouDB" unofficial-link URL
+        to a second song page.  Deferred to M5 alongside the character mapper.
         """
         if _visited is None:
             _visited = frozenset()
@@ -245,6 +238,59 @@ class TouhouDBClient:
             max_depth=max_depth,
         )
 
+    async def lookup_playlist_bulk(
+        self,
+        playlist_url: str,
+    ) -> list[SongDetail | None]:
+        """
+        Bulk-match all videos in a YouTube playlist against TouhouDB in one
+        API call, returning a list in playlist order.
+
+        Each element is a ``SongDetail`` if TouhouDB has a match for that
+        position, or ``None`` if no match was found.
+
+        TouhouDB exposes a playlist-import endpoint used by its "Create song
+        list from YouTube playlist" UI feature.  One observed request from the
+        browser is::
+
+            GET /api/songs/import?url=<youtube-playlist-url>&fields=Artists,Tags,PVs
+
+        The response shape is ``{"items": [{"matchedSong": {...} | null}]}``.
+
+        TODO: Verify the exact endpoint path and response schema against the
+        live TouhouDB API (the path above was inferred from browser devtools).
+        Once confirmed, wire this into ``IngestPipeline.ingest_playlist`` as
+        the primary match step: call this once for the whole playlist, then
+        iterate items — calling ``get_song`` only for confirmed matches to
+        fetch full detail (artists/tags/albums), and skipping the per-video
+        ``lookup_by_youtube_url`` calls entirely for unmatched videos.
+        This reduces TouhouDB API calls from O(N) to O(matched) for the lookup
+        phase.
+        """
+        try:
+            data = await self._get(
+                "/songs/import",
+                url=playlist_url,
+                fields=_SONG_FIELDS,
+                lang="Default",
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (404, 501):
+                logger.warning(
+                    "Bulk playlist import endpoint unavailable (status %d); "
+                    "fall back to per-video lookup",
+                    exc.response.status_code,
+                )
+                return []
+            raise
+
+        items = data.get("items", []) if isinstance(data, dict) else []
+        results: list[SongDetail | None] = []
+        for item in items:
+            matched = item.get("matchedSong") if isinstance(item, dict) else None
+            results.append(SongDetail.model_validate(matched) if matched else None)
+        return results
+
     async def get_normalization_count(
         self,
         entity_type: str,
@@ -258,6 +304,11 @@ class TouhouDBClient:
 
         Uses ``GET /api/songs`` with a filter and ``getTotalCount=true``,
         requesting zero items (only the count is needed).
+
+        NOTE: Not called during ingestion.  This is infrastructure for M5's
+        ``lotad/sync/normalization.py`` → ``NormalizationFetcher``, which
+        populates the ``normalization_metrics`` table used by the scoring
+        engine to weight scores by popularity.
         """
         params: dict[str, Any] = {
             "maxResults": 0,

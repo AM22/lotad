@@ -47,12 +47,25 @@ logger = logging.getLogger(__name__)
 # Album-video heuristics
 # ---------------------------------------------------------------------------
 
+# Patterns that reliably signal a multi-track composite video.
+# Deliberately conservative — false positives (tagging a single track as
+# composite) are worse than false negatives because they suppress the
+# INDIVIDUAL_VIDEO source type.
+#
+# Excluded on purpose:
+#   \bm3\b    — "m3" appears in song titles ("m3ga", "m3lody", etc.)
+#   \bc\d+\b  — Comiket numbers appear in individual track titles too
 _ALBUM_TITLE_PATTERNS = [
-    "full album",
-    "full arrange",
-    r"\bm3\b",  # M3 doujin event
-    r"\bc\d{2,3}\b",  # Comiket
-    r"\btha\b",  # Touhou Hack and Apps
+    r"\bfull\s+album\b",
+    r"\bfull\s+arrange\b",
+    # Crossfade / XFD demo videos — always composite
+    r"\bxfd\b",
+    r"\bx-?fade\b",
+    r"\bcrossfade\b",
+    r"クロスフェード",  # katakana "crossfade"
+    # Composite title pattern: "Song A + Song B"
+    # Space-plus-space is rare in single-song titles
+    r" \+ ",
 ]
 
 _ALBUM_RE = _re.compile(
@@ -60,16 +73,28 @@ _ALBUM_RE = _re.compile(
     _re.IGNORECASE,
 )
 
+# 19:30 = 1170 seconds.  Chosen empirically:
+#   - Longest known single arrangement: ~19:00 (OgS-ScUoN5M)
+#   - Shortest known full-album video: ~20:00
+# This threshold sits cleanly between the two populations.
+_ALBUM_DURATION_THRESHOLD_SECONDS = 1170
+
 
 def is_album_video(item: PlaylistItem) -> bool:
     """
-    Return True if the playlist item looks like a multi-track album video.
+    Return True if the playlist item looks like a multi-track composite video.
 
     Heuristics (any one is sufficient):
-    - Duration > 20 minutes
-    - Title contains known album-indicator patterns
+    - Duration ≥ 19:30 (1170 s)
+    - Title contains a known composite-video indicator pattern
+
+    Note: YouTube Premium / members-only videos may report duration_seconds=None
+    even for long videos.  Those are treated as non-album (conservative default).
     """
-    if item.duration_seconds is not None and item.duration_seconds > 20 * 60:
+    if (
+        item.duration_seconds is not None
+        and item.duration_seconds >= _ALBUM_DURATION_THRESHOLD_SECONDS
+    ):
         return True
     return bool(_ALBUM_RE.search(item.title))
 
@@ -80,6 +105,11 @@ def extract_timestamps(description: str) -> list[tuple[int, str]]:
 
     Recognises ``MM:SS`` and ``HH:MM:SS`` followed by a track title.
     Returns ``[(seconds, title), ...]`` sorted by timestamp ascending.
+
+    TODO (M3 composite-video path): hook this up in ``ingest_video`` when
+    ``is_album_video`` returns True.  The returned list should be passed to
+    ``map_album_to_db`` so that ``album_tracks.youtube_timestamp_seconds`` is
+    populated for each track, enabling per-track playback links.
     """
     pattern = _re.compile(
         r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\s+[.\-–—|]?\s*(.+)",
