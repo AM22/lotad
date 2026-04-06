@@ -53,8 +53,10 @@ logger = logging.getLogger(__name__)
 # INDIVIDUAL_VIDEO source type.
 #
 # Excluded on purpose:
-#   \bm3\b    — "m3" appears in song titles ("m3ga", "m3lody", etc.)
-#   \bc\d+\b  — Comiket numbers appear in individual track titles too
+#   \bm3\b    — uploaders commonly include "M3" in single-song titles to
+#               indicate the event where it was released (not that it's a
+#               full album video)
+#   \bc\d+\b  — same rationale for Comiket event numbers
 _ALBUM_TITLE_PATTERNS = [
     r"\bfull\s+album\b",
     r"\bfull\s+arrange\b",
