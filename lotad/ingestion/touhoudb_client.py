@@ -31,6 +31,8 @@ from lotad.ingestion.http_client import (
 from lotad.ingestion.touhoudb_models import (
     AlbumDetail,
     ArtistDetail,
+    ImportedSongList,
+    PartialImportedSongs,
     SongDetail,
 )
 
@@ -238,58 +240,107 @@ class TouhouDBClient:
             max_depth=max_depth,
         )
 
-    async def lookup_playlist_bulk(
+    async def bulk_match_playlist(
         self,
-        playlist_url: str,
-    ) -> list[SongDetail | None]:
+        playlist_id: str,
+        *,
+        max_results: int = 50,
+    ) -> dict[str, int]:
         """
-        Bulk-match all videos in a YouTube playlist against TouhouDB in one
-        API call, returning a list in playlist order.
+        Bulk-match all videos in a YouTube playlist against TouhouDB.
 
-        Each element is a ``SongDetail`` if TouhouDB has a match for that
-        position, or ``None`` if no match was found.
+        Uses the ``/api/songLists/import`` endpoints (paginated) to retrieve
+        TouhouDB match info for every video in the playlist in
+        ``O(ceil(N / max_results))`` API calls instead of ``O(N)`` individual
+        ``/songs/byPv`` calls.
 
-        TouhouDB exposes a playlist-import endpoint used by its "Create song
-        list from YouTube playlist" UI feature.  One observed request from the
-        browser is::
+        Returns a ``dict`` mapping YouTube video ID → TouhouDB song ID for
+        every video that has a confirmed match.  Unmatched videos are omitted.
 
-            GET /api/songs/import?url=<youtube-playlist-url>&fields=Artists,Tags,PVs
+        The ``matchedSong`` returned by these endpoints is a basic
+        ``SongForApiContract`` (no artists/tags/albums).  Callers should call
+        ``get_song(id)`` for each matched ID to fetch full detail.
 
-        The response shape is ``{"items": [{"matchedSong": {...} | null}]}``.
+        Endpoint details (from VocaDB source, verified against TouhouDB)::
 
-        TODO: Verify the exact endpoint path and response schema against the
-        live TouhouDB API (the path above was inferred from browser devtools).
-        Once confirmed, wire this into ``IngestPipeline.ingest_playlist`` as
-        the primary match step: call this once for the whole playlist, then
-        iterate items — calling ``get_song`` only for confirmed matches to
-        fetch full detail (artists/tags/albums), and skipping the per-video
-        ``lookup_by_youtube_url`` calls entirely for unmatched videos.
-        This reduces TouhouDB API calls from O(N) to O(matched) for the lookup
-        phase.
+            # First page + playlist metadata
+            GET /api/songLists/import?url=<yt-playlist-url>&parseAll=true
+            → ImportedSongList  (top-level has .songs: PartialImportedSongs)
+
+            # Subsequent pages
+            GET /api/songLists/import-songs
+                ?url=<yt-playlist-url>&pageToken=<token>&maxResults=<n>
+            → PartialImportedSongs  (.nextPageToken is null on last page)
+
+        Both endpoints are undocumented in Swagger (marked IgnoreApi=true in
+        VocaDB source) but are stable UI-facing endpoints.
+
+        Args:
+            playlist_id: YouTube playlist ID (the ``PL…`` part, not a URL).
+            max_results: items per page for subsequent pages (default 50).
+
+        Raises:
+            CircuitBreakerOpen: if the circuit breaker is open.
+            httpx.HTTPStatusError: on unrecoverable API errors.
         """
+        playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+        matched: dict[str, int] = {}
+
+        # --- First page (also returns playlist metadata) ---
         try:
-            data = await self._get(
-                "/songs/import",
+            first_data = await self._get(
+                "/songLists/import",
                 url=playlist_url,
-                fields=_SONG_FIELDS,
-                lang="Default",
+                parseAll="true",
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (404, 501):
                 logger.warning(
-                    "Bulk playlist import endpoint unavailable (status %d); "
-                    "fall back to per-video lookup",
+                    "songLists/import unavailable (status %d); falling back to per-video lookup",
                     exc.response.status_code,
                 )
-                return []
+                return {}
             raise
 
-        items = data.get("items", []) if isinstance(data, dict) else []
-        results: list[SongDetail | None] = []
-        for item in items:
-            matched = item.get("matchedSong") if isinstance(item, dict) else None
-            results.append(SongDetail.model_validate(matched) if matched else None)
-        return results
+        first = ImportedSongList.model_validate(first_data)
+        for item in first.songs.items:
+            if item.matchedSong is not None and item.pvId:
+                matched[item.pvId] = item.matchedSong.id
+
+        page_token: str | None = first.songs.nextPageToken
+
+        # --- Subsequent pages ---
+        while page_token:
+            try:
+                page_data = await self._get(
+                    "/songLists/import-songs",
+                    url=playlist_url,
+                    pageToken=page_token,
+                    maxResults=max_results,
+                    parseAll="true",
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (404, 501):
+                    logger.warning(
+                        "songLists/import-songs unavailable (status %d); stopping pagination",
+                        exc.response.status_code,
+                    )
+                    break
+                raise
+
+            page = PartialImportedSongs.model_validate(page_data)
+            for item in page.items:
+                if item.matchedSong is not None and item.pvId:
+                    matched[item.pvId] = item.matchedSong.id
+            page_token = page.nextPageToken
+
+        logger.info(
+            "bulk_match_playlist %s: %d/%d videos matched",
+            playlist_id,
+            len(matched),
+            first.songs.totalCount,
+        )
+        return matched
 
     async def get_normalization_count(
         self,

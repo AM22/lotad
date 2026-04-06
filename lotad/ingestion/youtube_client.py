@@ -33,6 +33,9 @@ class PlaylistItem(BaseModel):
     duration_seconds: int | None = None  # filled in by a separate videos.list call
     position: int = 0  # 0-based position in the playlist
     playlist_item_id: str = ""  # YouTube's playlist item resource ID
+    # False when YouTube returns a "Deleted video" or "Private video" stub.
+    # The video_id is still present in the playlist but the content is gone.
+    is_available: bool = True
 
 
 _ISO8601_DURATION_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", re.IGNORECASE)
@@ -126,15 +129,23 @@ class YouTubeClient:
 
                 snippet = item.get("snippet", {})
                 vid = snippet.get("resourceId", {}).get("videoId", "")
+                title = snippet.get("title", "")
+
+                # YouTube returns stubs for deleted/private videos.  Both have
+                # a reserved title and no videoOwnerChannelId.  We still yield
+                # them so the pipeline can create a DROPPED_VIDEO task.
+                is_available = title not in ("Deleted video", "Private video")
+
                 yield PlaylistItem(
                     video_id=vid,
-                    title=snippet.get("title", ""),
+                    title=title,
                     description=snippet.get("description", ""),
                     channel_id=snippet.get("videoOwnerChannelId", ""),
                     channel_name=snippet.get("videoOwnerChannelTitle", ""),
                     duration_seconds=durations.get(vid),
                     position=snippet.get("position", yielded),
                     playlist_item_id=item.get("id", ""),
+                    is_available=is_available,
                 )
                 yielded += 1
 

@@ -211,3 +211,49 @@ class ArtistDetail(_Base):
 class SongList(_Base):
     items: list[SongSearchResult] = Field(default_factory=list)
     totalCount: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Song-list import models  (GET /api/songLists/import*)
+#
+# TouhouDB's playlist-import feature lives under /api/songLists/, not
+# /api/songs/.  Both endpoints are marked [ApiExplorerSettings(IgnoreApi=true)]
+# in VocaDB so they do not appear in Swagger, but they are stable browser
+# endpoints used by the "Create song list from YouTube playlist" UI.
+#
+# Endpoint 1 (first page + metadata):
+#   GET /api/songLists/import?url=<youtube-playlist-url>&parseAll=true
+#   → ImportedSongList
+#
+# Endpoint 2 (subsequent pages):
+#   GET /api/songLists/import-songs?url=<url>&pageToken=<token>&maxResults=<n>
+#   → PartialImportedSongs
+# ---------------------------------------------------------------------------
+
+
+class ImportedSongInList(_Base):
+    """One item returned by the songLists import endpoints."""
+
+    # SongForApiContract (basic song info) when TouhouDB found a match, else None.
+    # We model it as SongSummary — we only need the id to call get_song() for
+    # full detail (artists/tags/albums are not returned by the import endpoint).
+    matchedSong: SongSummary | None = None
+    name: str = ""  # video title as returned by YouTube
+    pvId: str = ""  # YouTube video ID (11-char)
+    pvService: str = "Youtube"
+    sortIndex: int = 0  # 1-based position in the playlist
+
+
+class PartialImportedSongs(_Base):
+    """Paginated songs response from GET /api/songLists/import-songs."""
+
+    items: list[ImportedSongInList] = Field(default_factory=list)
+    totalCount: int = 0
+    nextPageToken: str | None = None
+
+
+class ImportedSongList(_Base):
+    """Top-level response from GET /api/songLists/import."""
+
+    name: str = ""  # playlist title from YouTube
+    songs: PartialImportedSongs = Field(default_factory=PartialImportedSongs)

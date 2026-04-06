@@ -2,11 +2,22 @@
 
 The pipeline processes one playlist item at a time:
 1. Upsert the ``youtube_videos`` row.
-2. Call TouhouDB ``/songs/byPv`` to find a match.
+2. Look up the song in TouhouDB — bulk-first, per-video fallback:
+   a. Before the per-video loop, call ``bulk_match_playlist`` once for the
+      whole playlist.  This uses the ``/api/songLists/import`` endpoints and
+      reduces TouhouDB API calls from O(N) to O(ceil(N/50)) for the lookup
+      phase.
+   b. For each video: if the bulk map has a match, call ``get_song(id)`` for
+      full detail (artists/tags/albums).  Otherwise fall back to the
+      per-video ``/songs/byPv`` lookup.
 3. On match: map the song (and album if album video) to the DB, then
    create a ``playlist_songs`` row.
 4. On no match: create an ``INGEST_FAILED`` task for manual follow-up
    (LLM fallback will be wired in during M4).
+
+Special cases:
+- Deleted/private videos (``item.is_available = False``): a ``DROPPED_VIDEO``
+  task is created immediately without attempting a TouhouDB lookup.
 
 All DB writes for a single video are wrapped in a single transaction.
 Failures on individual videos are caught, logged, and do not abort the run.
@@ -205,6 +216,24 @@ class IngestPipeline:
         items = list(self._yt.list_playlist_items(playlist_id, limit=limit))
         total = len(items)
 
+        # Bulk-match the whole playlist against TouhouDB in O(ceil(N/50)) calls.
+        # Falls back to empty dict (per-video lookup) if the endpoint is
+        # unavailable or raises an unexpected error.
+        try:
+            bulk_map = await self._tdb.bulk_match_playlist(playlist_id)
+            logger.info(
+                "Bulk pre-match: %d/%d videos have a TouhouDB entry",
+                len(bulk_map),
+                total,
+            )
+        except Exception:
+            logger.warning(
+                "bulk_match_playlist failed; falling back to per-video lookup for all %d items",
+                total,
+                exc_info=True,
+            )
+            bulk_map = {}
+
         for item in items:
             if resume and item.position <= resume_position:
                 stats["skipped"] += 1
@@ -214,7 +243,11 @@ class IngestPipeline:
                 progress_callback(processed, total, item.title)
 
             try:
-                matched = await self.ingest_video(item, playlist_db_id=playlist_db_id)
+                matched = await self.ingest_video(
+                    item,
+                    playlist_db_id=playlist_db_id,
+                    bulk_match=bulk_map,
+                )
                 if matched:
                     stats["matched"] += 1
                 else:
@@ -243,19 +276,54 @@ class IngestPipeline:
         item: PlaylistItem,
         *,
         playlist_db_id: int | None = None,
+        bulk_match: dict[str, int] | None = None,
     ) -> bool:
         """
         Ingest a single YouTube video.
 
+        Args:
+            item: playlist item from the YouTube client.
+            playlist_db_id: internal DB id of the playlist this video belongs to.
+            bulk_match: optional pre-computed dict of ``{video_id: touhoudb_song_id}``
+                from ``bulk_match_playlist``.  When provided and the video has a
+                match, ``get_song(id)`` is called instead of ``/songs/byPv``,
+                saving one API round-trip per matched video.
+
         Returns True if a TouhouDB match was found, False otherwise.
         """
         with self._engine.begin() as conn:
+            # 0. Deleted / private videos: record the stub and create a task.
+            if not item.is_available:
+                yt_video_id = self._upsert_youtube_video(item, conn)
+                self._create_task(
+                    TaskType.DROPPED_VIDEO,
+                    f"Deleted or private video still in playlist: {item.video_id!r}",
+                    {
+                        "video_id": item.video_id,
+                        "title": item.title,
+                        "note": "YouTube returned a deleted/private stub; video is no longer accessible",
+                    },
+                    conn,
+                    related_video_id=yt_video_id,
+                )
+                logger.info(
+                    "Dropped video %s (%r) — created DROPPED_VIDEO task", item.video_id, item.title
+                )
+                return False
+
             # 1. Upsert youtube_videos row
             yt_video_id = self._upsert_youtube_video(item, conn)
 
-            # 2. Look up in TouhouDB
+            # 2. Look up in TouhouDB.
+            #    If the bulk pre-match found this video, fetch full detail via
+            #    get_song().  Otherwise fall back to the per-video /songs/byPv
+            #    endpoint (covers songs added to TouhouDB after the bulk call,
+            #    and the standalone ingest_video path used from the CLI).
             try:
-                song_detail = await self._tdb.lookup_by_youtube_url(item.video_id)
+                if bulk_match is not None and item.video_id in bulk_match:
+                    song_detail = await self._tdb.get_song(bulk_match[item.video_id])
+                else:
+                    song_detail = await self._tdb.lookup_by_youtube_url(item.video_id)
             except CircuitBreakerOpen:
                 logger.warning("TouhouDB circuit breaker open; skipping video %s", item.video_id)
                 self._create_task(
@@ -337,7 +405,7 @@ class IngestPipeline:
                 channel_name=item.channel_name or None,
                 description=item.description or None,
                 duration_seconds=item.duration_seconds,
-                is_available=True,
+                is_available=item.is_available,
             )
             .on_conflict_do_update(
                 index_elements=["video_id"],
@@ -346,7 +414,7 @@ class IngestPipeline:
                     "channel_id": item.channel_id or None,
                     "channel_name": item.channel_name or None,
                     "duration_seconds": item.duration_seconds,
-                    "is_available": True,
+                    "is_available": item.is_available,
                     "updated_at": sa.func.now(),
                 },
             )

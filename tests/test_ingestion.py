@@ -51,6 +51,64 @@ async def test_get_normalization_count_runs(settings):
 
 
 # ---------------------------------------------------------------------------
+# Bulk playlist match
+# ---------------------------------------------------------------------------
+
+# MEGAMIX playlist — public, well-known, high TouhouDB coverage.
+_MEGAMIX_PLAYLIST_ID = "PLuDYUKEqeoaxodcKdDwsnjUBt1ZMsOa8q"
+
+
+@pytest.mark.asyncio
+async def test_bulk_match_playlist_returns_matches(settings):
+    """
+    bulk_match_playlist should return a non-empty dict for MEGAMIX.
+
+    Verifies:
+    - The /api/songLists/import endpoint is reachable on TouhouDB.
+    - Matched entries have non-empty string keys (video IDs) and int values
+      (TouhouDB song IDs).
+    - At least one video in MEGAMIX is known to TouhouDB.
+    """
+    from lotad.ingestion.touhoudb_client import TouhouDBClient
+
+    async with TouhouDBClient.from_settings(settings) as client:
+        result = await client.bulk_match_playlist(_MEGAMIX_PLAYLIST_ID)
+
+    assert isinstance(result, dict), "Expected dict[str, int]"
+    assert len(result) > 0, "Expected at least one TouhouDB match in MEGAMIX"
+
+    for video_id, song_id in result.items():
+        assert isinstance(video_id, str) and len(video_id) == 11, (
+            f"video_id should be an 11-char YouTube ID, got {video_id!r}"
+        )
+        assert isinstance(song_id, int) and song_id > 0, (
+            f"song_id should be a positive int, got {song_id!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_bulk_match_playlist_pagination(settings):
+    """
+    bulk_match_playlist paginates correctly for a playlist with >10 videos.
+
+    TouhouDB's /api/songLists/import returns only 10 items on the first page;
+    subsequent pages use /api/songLists/import-songs.  This test confirms that
+    pagination works and the result covers more than the first page.
+
+    We use MEGAMIX (>200 videos) and verify that more than 10 matches are
+    returned — i.e. at least one page beyond the first was fetched.
+    """
+    from lotad.ingestion.touhoudb_client import TouhouDBClient
+
+    async with TouhouDBClient.from_settings(settings) as client:
+        result = await client.bulk_match_playlist(_MEGAMIX_PLAYLIST_ID)
+
+    # MEGAMIX has ~200+ videos; even with modest TouhouDB coverage we should
+    # exceed 10 matches, confirming that pagination returned more than page 1.
+    assert len(result) > 10, f"Expected >10 matches to confirm pagination worked; got {len(result)}"
+
+
+# ---------------------------------------------------------------------------
 # YouTube client
 # ---------------------------------------------------------------------------
 
