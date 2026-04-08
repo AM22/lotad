@@ -16,7 +16,7 @@ dependencies = [
     # HTTP + resilience
     "httpx>=0.27",
     "tenacity>=8.3",
-    "hishel>=0.0.30",               # RFC-7234 HTTP caching for httpx
+    "hishel>=0.0.30,<1.0",          # RFC-7234 HTTP caching for httpx (1.x has breaking API changes)
 
     # LLM + structured output
     "anthropic>=0.30",
