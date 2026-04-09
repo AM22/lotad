@@ -238,6 +238,9 @@ characters = sa.Table(
     ),
     sa.Column("is_playable", sa.Boolean, nullable=False, server_default="false"),
     sa.Column("notes", sa.Text, nullable=True),
+    # TouhouDB artist ID for characters; used to upsert from API responses.
+    # Nullable because manually-seeded characters won't have a TouhouDB entry.
+    sa.Column("touhoudb_id", sa.Integer, nullable=True, unique=True),
 )
 
 artists = sa.Table(
