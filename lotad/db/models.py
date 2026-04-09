@@ -67,6 +67,7 @@ class SongType(enum.StrEnum):
     REMASTER = "REMASTER"
     LIVE = "LIVE"
     SHORT_VERSION = "SHORT_VERSION"  # TouhouDB-specific
+    MUSIC_PV = "MUSIC_PV"  # arrangement with an official music video
     OTHER = "OTHER"
 
 

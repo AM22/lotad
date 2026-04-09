@@ -62,7 +62,7 @@ _SONG_TYPE_MAP: dict[str, SongType] = {
     "original": SongType.ORIGINAL,
     "remaster": SongType.REMASTER,
     # VocaDB/TouhouDB types that don't map cleanly to a musical category
-    "musicpv": SongType.OTHER,
+    "musicpv": SongType.MUSIC_PV,
     "dramapv": SongType.OTHER,
     "unspecified": SongType.OTHER,
     "other": SongType.OTHER,
