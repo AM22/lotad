@@ -217,8 +217,17 @@ class IngestPipeline:
         total = len(items)
 
         # Bulk-match the whole playlist against TouhouDB in O(ceil(N/50)) calls.
-        # Falls back to empty dict (per-video lookup) if the endpoint is
-        # unavailable or raises an unexpected error.
+        #
+        # Both the bulk endpoint and the per-video /songs/byPv endpoint use
+        # identical PV-lookup logic (exact match on pvService+pvId).  A miss
+        # in the bulk result is therefore authoritative — calling /songs/byPv
+        # for unmatched videos would never find anything new.
+        #
+        # Convention used throughout this method and ingest_video:
+        #   bulk_map = None  →  bulk failed; fall back to per-video lookup
+        #   bulk_map = dict  →  bulk succeeded; its result is authoritative
+        #                       (matched → get_song, unmatched → INGEST_FAILED)
+        bulk_map: dict[str, int] | None
         try:
             bulk_map = await self._tdb.bulk_match_playlist(playlist_id)
             logger.info(
@@ -232,7 +241,7 @@ class IngestPipeline:
                 total,
                 exc_info=True,
             )
-            bulk_map = {}
+            bulk_map = None
 
         for item in items:
             if resume and item.position <= resume_position:
@@ -284,10 +293,13 @@ class IngestPipeline:
         Args:
             item: playlist item from the YouTube client.
             playlist_db_id: internal DB id of the playlist this video belongs to.
-            bulk_match: optional pre-computed dict of ``{video_id: touhoudb_song_id}``
-                from ``bulk_match_playlist``.  When provided and the video has a
-                match, ``get_song(id)`` is called instead of ``/songs/byPv``,
-                saving one API round-trip per matched video.
+            bulk_match: result of a prior ``bulk_match_playlist`` call, or ``None``
+                if the bulk call failed / was not attempted.
+                - ``None``           → per-video ``/songs/byPv`` fallback
+                - ``{...}`` (dict)   → authoritative; video in map → ``get_song()``,
+                                       video absent → immediate INGEST_FAILED (both
+                                       endpoints use identical PV-lookup logic so a
+                                       bulk miss is a definitive miss)
 
         Returns True if a TouhouDB match was found, False otherwise.
         """
@@ -315,15 +327,20 @@ class IngestPipeline:
             yt_video_id = self._upsert_youtube_video(item, conn)
 
             # 2. Look up in TouhouDB.
-            #    If the bulk pre-match found this video, fetch full detail via
-            #    get_song().  Otherwise fall back to the per-video /songs/byPv
-            #    endpoint (covers songs added to TouhouDB after the bulk call,
-            #    and the standalone ingest_video path used from the CLI).
+            #
+            #   bulk_match is None   → bulk failed; use per-video /songs/byPv
+            #   video_id IN bulk     → bulk matched; fetch full detail via get_song()
+            #   video_id NOT IN bulk → bulk ran and found nothing; both endpoints
+            #                          use identical PV-lookup logic so /songs/byPv
+            #                          would return the same null — skip it and
+            #                          treat as unmatched immediately
             try:
-                if bulk_match is not None and item.video_id in bulk_match:
+                if bulk_match is None:
+                    song_detail = await self._tdb.lookup_by_youtube_url(item.video_id)
+                elif item.video_id in bulk_match:
                     song_detail = await self._tdb.get_song(bulk_match[item.video_id])
                 else:
-                    song_detail = await self._tdb.lookup_by_youtube_url(item.video_id)
+                    song_detail = None  # authoritative miss from bulk
             except CircuitBreakerOpen:
                 logger.warning("TouhouDB circuit breaker open; skipping video %s", item.video_id)
                 self._create_task(
