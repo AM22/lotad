@@ -36,8 +36,10 @@ from lotad.db.models import (
     album_tags,
     albums,
     artists,
+    characters,
     original_songs,
     song_artists,
+    song_characters,
     song_tags,
     songs,
 )
@@ -60,7 +62,7 @@ _SONG_TYPE_MAP: dict[str, SongType] = {
     "original": SongType.ORIGINAL,
     "remaster": SongType.REMASTER,
     # VocaDB/TouhouDB types that don't map cleanly to a musical category
-    "musicpv": SongType.OTHER,
+    "musicpv": SongType.MUSIC_PV,
     "dramapv": SongType.OTHER,
     "unspecified": SongType.OTHER,
     "other": SongType.OTHER,
@@ -248,6 +250,57 @@ def map_song_to_db(detail: SongDetail, conn: Connection) -> int:
     return song_id
 
 
+def _upsert_song_character(
+    credit: ArtistForSong,
+    song_id: int,
+    conn: Connection,
+) -> None:
+    """
+    Upsert a Touhou character into ``characters`` and link it to the song via
+    ``song_characters``.
+
+    TouhouDB credits characters (e.g. Yoshika Miyako, Seiga Kaku) as artists
+    with ``artistType: "Character"``.  They are subjects of the song, not
+    producers, so they belong in ``song_characters`` rather than
+    ``song_artists``.
+
+    Uses ``touhoudb_id`` as the upsert key; ``name_romanized`` is taken from
+    ``additionalNames`` (TouhouDB puts the romanized name there).
+    """
+    artist = credit.artist
+    if artist is None:
+        return
+
+    # additionalNames contains the romanized name, e.g. "Yoshika Miyako"
+    # alongside the kanji name "宮古 芳香".
+    name_romanized = artist.additionalNames.strip() or None
+
+    stmt = (
+        pg_insert(characters)
+        .values(
+            touhoudb_id=artist.id,
+            name=artist.name,
+            name_romanized=name_romanized,
+        )
+        .on_conflict_do_update(
+            index_elements=["touhoudb_id"],
+            set_={
+                "name": artist.name,
+                "name_romanized": name_romanized,
+            },
+        )
+        .returning(characters.c.id)
+    )
+    character_id: int = conn.execute(stmt).scalar_one()
+
+    conn.execute(
+        pg_insert(song_characters)
+        .values(song_id=song_id, character_id=character_id)
+        .on_conflict_do_nothing()
+    )
+    logger.debug("Linked character %r (touhoudb_id=%d) to song %d", artist.name, artist.id, song_id)
+
+
 def _upsert_song_artists(
     credits: list[ArtistForSong],
     song_id: int,
@@ -259,9 +312,10 @@ def _upsert_song_artists(
 
         # Characters (e.g. Yoshika Miyako, Seiga) are Touhou game characters
         # credited by TouhouDB as "subjects" of the song, not actual producers.
-        # Storing them as song_artists would corrupt arranger/vocalist analytics.
+        # Route them to song_characters instead of song_artists to keep
+        # arranger/vocalist analytics clean.
         if credit.artist and credit.artist.artistType.lower() == "character":
-            logger.debug("Skipping character artist %r (not a real producer)", credit.artist.name)
+            _upsert_song_character(credit, song_id, conn)
             continue
 
         artist_id = _upsert_artist(credit, conn)

@@ -67,6 +67,7 @@ class SongType(enum.StrEnum):
     REMASTER = "REMASTER"
     LIVE = "LIVE"
     SHORT_VERSION = "SHORT_VERSION"  # TouhouDB-specific
+    MUSIC_PV = "MUSIC_PV"  # arrangement with an official music video
     OTHER = "OTHER"
 
 
@@ -238,6 +239,9 @@ characters = sa.Table(
     ),
     sa.Column("is_playable", sa.Boolean, nullable=False, server_default="false"),
     sa.Column("notes", sa.Text, nullable=True),
+    # TouhouDB artist ID for characters; used to upsert from API responses.
+    # Nullable because manually-seeded characters won't have a TouhouDB entry.
+    sa.Column("touhoudb_id", sa.Integer, nullable=True, unique=True),
 )
 
 artists = sa.Table(
