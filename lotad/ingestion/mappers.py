@@ -59,8 +59,10 @@ _SONG_TYPE_MAP: dict[str, SongType] = {
     "instrumental": SongType.INSTRUMENTAL,
     "original": SongType.ORIGINAL,
     "remaster": SongType.REMASTER,
+    # VocaDB/TouhouDB types that don't map cleanly to a musical category
     "musicpv": SongType.OTHER,
     "dramapv": SongType.OTHER,
+    "unspecified": SongType.OTHER,
     "other": SongType.OTHER,
 }
 
@@ -87,8 +89,13 @@ _ARTIST_TYPE_MAP: dict[str, ArtistType] = {
     "lyricist": ArtistType.INDIVIDUAL,
     "otherindividual": ArtistType.INDIVIDUAL,
     "vocalist": ArtistType.VOCALIST,
+    "band": ArtistType.UNIT,
     "othergroup": ArtistType.UNIT,
     "unknown": ArtistType.INDIVIDUAL,
+    # "Character" entries are Touhou game characters used as subject tags —
+    # they should be filtered before reaching _upsert_artist, but map them
+    # explicitly so the fallback warning is never triggered for this type.
+    "character": ArtistType.INDIVIDUAL,
 }
 
 _ROLE_MAP: dict[str, SongRole] = {
@@ -104,7 +111,11 @@ _ROLE_MAP: dict[str, SongRole] = {
 
 
 def _map_song_type(raw: str) -> SongType:
-    return _SONG_TYPE_MAP.get(raw.lower(), SongType.OTHER)
+    result = _SONG_TYPE_MAP.get(raw.lower())
+    if result is None:
+        logger.warning("Unknown TouhouDB songType %r — falling back to OTHER", raw)
+        return SongType.OTHER
+    return result
 
 
 def _map_disc_type(raw: str) -> DiscType:
@@ -245,6 +256,13 @@ def _upsert_song_artists(
     for credit in credits:
         if credit.isSupport:
             continue  # skip support/featuring credits for now
+
+        # Characters (e.g. Yoshika Miyako, Seiga) are Touhou game characters
+        # credited by TouhouDB as "subjects" of the song, not actual producers.
+        # Storing them as song_artists would corrupt arranger/vocalist analytics.
+        if credit.artist and credit.artist.artistType.lower() == "character":
+            logger.debug("Skipping character artist %r (not a real producer)", credit.artist.name)
+            continue
 
         artist_id = _upsert_artist(credit, conn)
         if artist_id is None:
