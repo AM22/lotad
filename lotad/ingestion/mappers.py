@@ -240,10 +240,15 @@ def map_song_to_db(detail: SongDetail, conn: Connection) -> int:
     )
     song_id: int = conn.execute(stmt).scalar_one()
 
-    # 2. Upsert artist credits
+    # 2. Replace artist credits and character links.
+    # Delete-then-reinsert (within the same transaction) ensures stale credits
+    # from a previous ingest are removed if TouhouDB data has changed.
+    conn.execute(song_artists.delete().where(song_artists.c.song_id == song_id))
+    conn.execute(song_characters.delete().where(song_characters.c.song_id == song_id))
     _upsert_song_artists(detail.artists, song_id, conn)
 
-    # 3. Upsert tags
+    # 3. Replace tags (same rationale — TouhouDB tags can change over time)
+    conn.execute(song_tags.delete().where(song_tags.c.song_id == song_id))
     _upsert_song_tags(detail.tags, song_id, conn)
 
     logger.debug("Upserted song id=%d touhoudb_id=%d %r", song_id, detail.id, detail.name)
