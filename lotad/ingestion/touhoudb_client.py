@@ -165,6 +165,11 @@ class TouhouDBClient:
                 logger.debug("No TouhouDB match for YouTube video %s", video_id)
                 return None
             raise
+        if data is None:
+            # TouhouDB returns HTTP 200 with a null body when no PV match is
+            # found (rather than 404).  Treat this the same as 404.
+            logger.debug("No TouhouDB match for YouTube video %s (null response)", video_id)
+            return None
         return SongDetail.model_validate(data)
 
     async def get_song(self, song_id: int) -> SongDetail:
