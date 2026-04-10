@@ -231,6 +231,7 @@ characters = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("name_romanized", sa.Text, nullable=True),
+    sa.Column("other_names", sa.ARRAY(sa.Text), nullable=True),
     sa.Column(
         "first_appearance_work_id",
         sa.Integer,

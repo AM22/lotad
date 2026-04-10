@@ -280,9 +280,11 @@ def _upsert_song_character(
     if artist is None:
         return
 
-    # additionalNames contains the romanized name, e.g. "Yoshika Miyako"
-    # alongside the kanji name "宮古 芳香".
-    name_romanized = artist.additionalNames.strip() or None
+    # additionalNames is a comma-separated list; the first entry is the
+    # romanized name (e.g. "Yoshika Miyako") and the rest are alternate names.
+    additional = [n.strip() for n in artist.additionalNames.split(",") if n.strip()]
+    name_romanized = additional[0] if additional else None
+    other_names = additional[1:] if len(additional) > 1 else None
 
     stmt = (
         pg_insert(characters)
@@ -290,12 +292,14 @@ def _upsert_song_character(
             touhoudb_id=artist.id,
             name=artist.name,
             name_romanized=name_romanized,
+            other_names=other_names,
         )
         .on_conflict_do_update(
             index_elements=["touhoudb_id"],
             set_={
                 "name": artist.name,
                 "name_romanized": name_romanized,
+                "other_names": other_names,
             },
         )
         .returning(characters.c.id)
