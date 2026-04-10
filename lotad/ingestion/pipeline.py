@@ -313,6 +313,8 @@ class IngestPipeline:
                     {
                         "video_id": item.video_id,
                         "title": item.title,
+                        "position": item.position,
+                        "playlist_db_id": playlist_db_id,
                         "note": "YouTube returned a deleted/private stub; video is no longer accessible",
                     },
                     conn,
