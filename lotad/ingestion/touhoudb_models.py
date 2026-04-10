@@ -59,14 +59,20 @@ class ArtistForSong(_Base):
     artist: ArtistSummary | None = None
     # ``name`` is a per-credit display-name override (e.g. guest alias).
     name: str = ""
-    # Comma-separated role flags: "Arranger", "Vocalist", "Lyricist", etc.
-    # "Default" means the main role for the song type (Arranger for arrangements).
+    # ``roles`` is the raw stored value — almost always "Default" unless an
+    # explicit role override was set by the TouhouDB editor.
     roles: str = "Default"
+    # ``effectiveRoles`` is computed by TouhouDB: when ``roles`` is "Default"
+    # it resolves the actual role from the artist's ``artistType``
+    # (e.g. artistType="Lyricist" → effectiveRoles="Lyricist").
+    # This is the field we should use for mapping — not ``roles``.
+    effectiveRoles: str = "Default"
     isSupport: bool = False
 
     @property
     def role_list(self) -> list[str]:
-        return [r.strip() for r in self.roles.split(",") if r.strip()]
+        """Comma-separated effectiveRoles split into a list."""
+        return [r.strip() for r in self.effectiveRoles.split(",") if r.strip()]
 
 
 class AlbumSummary(_Base):

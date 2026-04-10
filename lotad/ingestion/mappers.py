@@ -128,16 +128,20 @@ def _map_artist_type(raw: str) -> ArtistType:
     return _ARTIST_TYPE_MAP.get(raw.lower(), ArtistType.INDIVIDUAL)
 
 
-def _map_role(raw: str) -> SongRole | None:
+def _map_role(raw: str, *, artist_type: str = "Unknown") -> SongRole | None:
     """
     Map a single TouhouDB role string to our SongRole enum.
 
-    "Default" means "main role for this song type" — for Touhou arrangements
-    the de-facto main role is Arranger.  Returns None for unmapped roles.
+    "Default" in VocaDB/TouhouDB means "infer the role from the artist's type"
+    rather than being an explicit Arranger credit.  For Vocalist-type artists the
+    inferred role is VOCALIST; for everyone else (producers, circles, individuals,
+    groups) it is ARRANGER.
+
+    Returns None for unmapped roles (the caller will log and skip them).
     """
     normalized = raw.strip().lower()
     if normalized == "default":
-        return SongRole.ARRANGER
+        return SongRole.VOCALIST if artist_type.lower() == "vocalist" else SongRole.ARRANGER
     return _ROLE_MAP.get(normalized)
 
 
@@ -327,8 +331,17 @@ def _upsert_song_artists(
         if artist_id is None:
             continue
 
+        raw_artist_type = credit.artist.artistType if credit.artist else "Unknown"
+        logger.debug(
+            "Artist %r (type=%r) roles=%r effectiveRoles=%r",
+            credit.artist.name if credit.artist else "?",
+            raw_artist_type,
+            credit.roles,
+            credit.effectiveRoles,
+        )
+
         for raw_role in credit.role_list:
-            role = _map_role(raw_role)
+            role = _map_role(raw_role, artist_type=raw_artist_type)
             if role is None:
                 logger.debug("Skipping unmapped role %r for artist %d", raw_role, artist_id)
                 continue
