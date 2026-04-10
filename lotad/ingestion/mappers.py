@@ -333,10 +333,11 @@ def _upsert_song_artists(
 
         raw_artist_type = credit.artist.artistType if credit.artist else "Unknown"
         logger.debug(
-            "Artist %r (type=%r) raw roles=%r",
+            "Artist %r (type=%r) roles=%r effectiveRoles=%r",
             credit.artist.name if credit.artist else "?",
             raw_artist_type,
             credit.roles,
+            credit.effectiveRoles,
         )
 
         for raw_role in credit.role_list:
