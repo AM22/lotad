@@ -596,15 +596,3 @@ class IngestPipeline:
                     related_song_id=song_id,
                 )
 
-        # Missing circle
-        has_circle = any(
-            c.artist and c.artist.artistType.lower() == "circle" for c in detail.artists
-        )
-        if not has_circle:
-            self._create_task(
-                TaskType.MISSING_CIRCLE,
-                f"Song {song_id} has no circle credited",
-                {"song_id": song_id},
-                conn,
-                related_song_id=song_id,
-            )
