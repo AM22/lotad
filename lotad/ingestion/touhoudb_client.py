@@ -45,10 +45,16 @@ _YOUTUBE_ID_RE = re.compile(
 
 # Fields requested from TouhouDB for full song detail
 _SONG_FIELDS = "Artists,Albums,Tags,PVs"
+# Extended fields used when resolving original chains — adds WebLinks so we can
+# detect multiple-original references in notes and unofficial link entries.
+_CHAIN_FIELDS = "Artists,Albums,Tags,PVs,WebLinks"
 # Fields requested for album detail (includes Tracks)
 _ALBUM_FIELDS = "Artists,Tags,Tracks"
 # Fields requested for artist detail
 _ARTIST_FIELDS = "Groups,Tags"
+
+# Matches any touhoudb.com/S/<id> URL (http or https, with or without trailing slash)
+_TOUHOUDB_SONG_RE = re.compile(r"touhoudb\.com/S/(\d+)", re.IGNORECASE)
 
 
 def _extract_youtube_id(url: str) -> str | None:
@@ -60,6 +66,29 @@ def _extract_youtube_id(url: str) -> str | None:
     if re.fullmatch(r"[A-Za-z0-9_-]{11}", url):
         return url
     return None
+
+
+def _extract_additional_original_ids(detail: SongDetail) -> set[int]:
+    """
+    Scan a song's notes and webLinks for touhoudb.com/S/<id> references.
+
+    TouhouDB only supports one ``originalVersionId`` per song, so medleys that
+    draw from multiple ZUN originals encode the extras in freeform notes or as
+    unofficial web links.  This extracts all such IDs so the chain traversal can
+    branch on them.
+    """
+    ids: set[int] = set()
+
+    if detail.notes:
+        for m in _TOUHOUDB_SONG_RE.finditer(detail.notes.all_text()):
+            ids.add(int(m.group(1)))
+
+    for link in detail.webLinks:
+        if not link.disabled:
+            for m in _TOUHOUDB_SONG_RE.finditer(link.url):
+                ids.add(int(m.group(1)))
+
+    return ids
 
 
 class TouhouDBClient:
@@ -173,9 +202,9 @@ class TouhouDBClient:
             return None
         return SongDetail.model_validate(data)
 
-    async def get_song(self, song_id: int) -> SongDetail:
+    async def get_song(self, song_id: int, *, fields: str = _SONG_FIELDS) -> SongDetail:
         """Fetch full song detail by TouhouDB song ID."""
-        data = await self._get(f"/songs/{song_id}", fields=_SONG_FIELDS, lang="Default")
+        data = await self._get(f"/songs/{song_id}", fields=fields, lang="Default")
         return SongDetail.model_validate(data)
 
     async def get_album(self, album_id: int) -> AlbumDetail:
@@ -195,30 +224,32 @@ class TouhouDBClient:
         _visited: frozenset[int] | None = None,
         _depth: int = 0,
         max_depth: int = 10,
+        _parent_detail: SongDetail | None = None,
     ) -> list[int]:
         """
-        Recursively follow ``originalVersionId`` links until reaching root
-        original(s) with no further original version.
+        Recursively follow ``originalVersionId`` links to all leaf originals.
 
-        Returns a list of TouhouDB song IDs that are the "leaves" of the
-        original chain (i.e. the actual Touhou source themes).
+        TouhouDB only stores one ``originalVersionId`` per song, but medleys
+        and mashups often draw from multiple ZUN source themes.  The extras are
+        encoded as touhoudb.com/S/<id> links in the notes or webLinks of the
+        node that directly points to the first leaf (the "penultimate" node).
 
-        Handles:
-        - Cycles (via visited set)
-        - Max depth (returns current node if depth exceeded)
+        Algorithm:
+        1. Follow ``originalVersionId`` toward the leaf, passing each node's
+           detail as ``_parent_detail`` to the next recursive call.
+        2. When a leaf is found (``originalVersionId is None``):
+           a. Add its ID to the result list.
+           b. Scan ``_parent_detail``'s notes and webLinks for additional
+              touhoudb.com/S/<id> references.
+           c. For each new ID found, recursively resolve its own chain and
+              collect the results.
+        3. Deduplicate via ``_visited`` throughout.
 
-        TODO (M5 — multiple originals): TouhouDB's schema only has one
-        ``originalVersionId`` FK, but medleys and mashups draw from multiple
-        Touhou source themes.  The additional originals are encoded in the
-        song's description or unofficial links when the ``multiple originals``
-        tag is present.  Once we reach the leaf node, check for that tag and,
-        if set, parse the description / TouhouDB reference link to extract the
-        full list of originals.  This requires either regex parsing of the
-        description field or following the "TouhouDB" unofficial-link URL
-        to a second song page.  Deferred to M5 alongside the character mapper.
+        Returns a list of TouhouDB song IDs that are the leaf ZUN originals.
         """
         if _visited is None:
             _visited = frozenset()
+
         if song_id in _visited or _depth >= max_depth:
             logger.warning(
                 "Original chain for song %d: cycle or max depth reached at depth %d",
@@ -228,15 +259,45 @@ class TouhouDBClient:
             return [song_id]
 
         try:
-            detail = await self.get_song(song_id)
+            detail = await self.get_song(song_id, fields=_CHAIN_FIELDS)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return [song_id]
             raise
 
         if detail.originalVersionId is None:
-            # This song IS the original (or has no linked original)
-            return [song_id]
+            # Leaf node — this is a ZUN original.
+            leaf_ids = [song_id]
+
+            # Scan the penultimate node for additional originals.
+            if _parent_detail is not None:
+                extra_ids = _extract_additional_original_ids(_parent_detail)
+                extra_ids.discard(song_id)  # already have this one
+
+                new_visited = _visited | {song_id}
+                for extra_id in sorted(extra_ids):  # sorted for deterministic order
+                    if extra_id in new_visited:
+                        continue
+                    new_visited = new_visited | {extra_id}
+                    try:
+                        branch = await self.resolve_original_chain(
+                            extra_id,
+                            _visited=new_visited,
+                            _depth=_depth + 1,
+                            max_depth=max_depth,
+                            # No _parent_detail — each branch resolves independently
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code == 404:
+                            logger.warning("Extra original ID %d returned 404 — skipping", extra_id)
+                            continue
+                        raise
+                    for leaf in branch:
+                        if leaf not in new_visited:
+                            leaf_ids.append(leaf)
+                            new_visited = new_visited | {leaf}
+
+            return leaf_ids
 
         _visited = _visited | {song_id}
         return await self.resolve_original_chain(
@@ -244,6 +305,7 @@ class TouhouDBClient:
             _visited=_visited,
             _depth=_depth + 1,
             max_depth=max_depth,
+            _parent_detail=detail,
         )
 
     async def bulk_match_playlist(
@@ -360,6 +422,11 @@ class TouhouDBClient:
         Paginates automatically through the full result set using
         ``GET /api/songs`` with ``artistId`` and ``songTypes`` filters.
 
+        ``childVoicebanks=false`` is critical here: TouhouDB associates every
+        Touhou character with ZUN (their creator), so without this flag the
+        endpoint returns thousands of fan-made originals featuring any Touhou
+        character — not just ZUN's own compositions.
+
         Args:
             artist_id: TouhouDB artist ID (e.g. 1 for ZUN, 45 for U2 Akiyama).
             song_type: TouhouDB song type filter (default "Original").
@@ -375,6 +442,7 @@ class TouhouDBClient:
             data = await self._get(
                 "/songs",
                 artistId=artist_id,
+                childVoicebanks="false",
                 songTypes=song_type,
                 fields=_SONG_FIELDS,
                 lang="Default",
