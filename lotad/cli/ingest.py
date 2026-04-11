@@ -106,7 +106,9 @@ async def _run_video(video_id: str) -> None:
     yt = YouTubeClient(settings)
     item = yt.get_video(video_id)
     if item is None:
-        console.print("[yellow]Warning: could not fetch video metadata from YouTube; using stub.[/yellow]")
+        console.print(
+            "[yellow]Warning: could not fetch video metadata from YouTube; using stub.[/yellow]"
+        )
         item = PlaylistItem(video_id=video_id, title=video_id)
 
     async with IngestPipeline(settings) as pipeline:
