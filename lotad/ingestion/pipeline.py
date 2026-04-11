@@ -119,10 +119,13 @@ def extract_timestamps(description: str) -> list[tuple[int, str]]:
     Recognises ``MM:SS`` and ``HH:MM:SS`` followed by a track title.
     Returns ``[(seconds, title), ...]`` sorted by timestamp ascending.
 
-    TODO (M3 composite-video path): hook this up in ``ingest_video`` when
-    ``is_album_video`` returns True.  The returned list should be passed to
-    ``map_album_to_db`` so that ``album_tracks.youtube_timestamp_seconds`` is
-    populated for each track, enabling per-track playback links.
+    Currently used to enrich ``INGEST_FAILED`` task data for unmatched album
+    videos (M4 LLM fallback reads ``extracted_timestamps`` from task data).
+
+    TODO (M3 composite-video path): also call this in the *matched* album path
+    and pass the result to ``map_album_to_db`` so that
+    ``album_tracks.youtube_timestamp_seconds`` is populated for each track,
+    enabling per-track playback links.
     """
     pattern = _re.compile(
         r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\s+[.\-–—|]?\s*(.+)",
@@ -355,11 +358,23 @@ class IngestPipeline:
                 return False
 
             if song_detail is None:
-                # No TouhouDB match — create a task for manual review
+                # No TouhouDB match — create a task for manual review (M4 LLM
+                # fallback will process these).  Pre-compute album heuristics
+                # so M4 can use them without re-fetching YouTube metadata.
+                album = is_album_video(item)
+                task_data: dict = {
+                    "video_id": item.video_id,
+                    "title": item.title,
+                    "is_album": album,
+                }
+                if album and item.description:
+                    timestamps = extract_timestamps(item.description)
+                    if timestamps:
+                        task_data["extracted_timestamps"] = timestamps
                 self._create_task(
                     TaskType.INGEST_FAILED,
                     f"No TouhouDB match: {item.title!r}",
-                    {"video_id": item.video_id, "title": item.title},
+                    task_data,
                     conn,
                     related_video_id=yt_video_id,
                 )
