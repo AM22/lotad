@@ -25,6 +25,8 @@ class TagSummary(_Base):
     id: int
     name: str
     categoryName: str = ""
+    urlSlug: str = ""
+    additionalNames: str = ""
 
 
 class TagVote(_Base):
@@ -68,6 +70,9 @@ class ArtistForSong(_Base):
     # This is the field we should use for mapping — not ``roles``.
     effectiveRoles: str = "Default"
     isSupport: bool = False
+    # ``categories`` groups credits by function: "Producer", "Vocalist", "Subject", etc.
+    # Characters credited as subjects have categories="Subject".
+    categories: str = ""
 
     @property
     def role_list(self) -> list[str]:
@@ -79,6 +84,10 @@ class AlbumSummary(_Base):
     id: int
     name: str
     discType: str = "Album"
+    # Additional fields returned when albums appear in a song's album list
+    defaultName: str = ""
+    releaseDate: ReleaseDate | None = None
+    catalogNumber: str | None = None
 
 
 class SongSummary(_Base):
@@ -102,6 +111,7 @@ class SongDetail(_Base):
     minMilliBpm: int | None = None
     maxMilliBpm: int | None = None
     originalVersionId: int | None = None
+    notes: str | None = None  # HTML notes/description from TouhouDB
     artistString: str = ""  # human-readable "circle feat. vocalist"
     artists: list[ArtistForSong] = Field(default_factory=list)
     albums: list[AlbumSummary] = Field(default_factory=list)
@@ -216,6 +226,13 @@ class ArtistDetail(_Base):
 
 class SongList(_Base):
     items: list[SongSearchResult] = Field(default_factory=list)
+    totalCount: int = 0
+
+
+class SongDetailList(_Base):
+    """Paginated list of full song detail, returned by /api/songs with fields."""
+
+    items: list[SongDetail] = Field(default_factory=list)
     totalCount: int = 0
 
 

@@ -218,10 +218,12 @@ original_songs = sa.Table(
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("name_romanized", sa.Text, nullable=True),
     sa.Column("work_id", sa.Integer, sa.ForeignKey("works.id"), nullable=False),
+    # Stage encoding: NULL=unknown, 0=title theme, 1-6=stage N, 7=extra stage,
+    # 8=ending theme, 9=staff roll / credits
     sa.Column("stage", sa.Integer, nullable=True),
-    sa.Column("track_number", sa.Integer, nullable=True),
+    # TODO (future): backfill is_boss from TouhouWiki — TouhouDB does not
+    # differentiate boss themes from stage themes.
     sa.Column("is_boss", sa.Boolean, nullable=False, server_default="false"),
-    sa.Column("is_extra_stage", sa.Boolean, nullable=False, server_default="false"),
     sa.Column("notes", sa.Text, nullable=True),
 )
 
@@ -292,9 +294,6 @@ songs = sa.Table(
         server_default="ARRANGEMENT",
     ),
     sa.Column("publish_date", sa.Date, nullable=True),
-    # BPM stored as millibpm integers (e.g. 174000 = 174 BPM) — mirrors TouhouDB
-    sa.Column("min_milli_bpm", sa.Integer, nullable=True),
-    sa.Column("max_milli_bpm", sa.Integer, nullable=True),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
