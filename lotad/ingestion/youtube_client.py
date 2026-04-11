@@ -153,6 +153,44 @@ class YouTubeClient:
             if not page_token:
                 break
 
+    def get_video(self, video_id: str) -> PlaylistItem | None:
+        """
+        Fetch a single video's full metadata as a ``PlaylistItem``.
+
+        Returns ``None`` if the video does not exist or the API call fails.
+        """
+        try:
+            resp = (
+                self._service.videos()
+                .list(
+                    part="snippet,contentDetails",
+                    id=video_id,
+                )
+                .execute()
+            )
+        except HttpError as exc:
+            logger.warning("videos.list failed for %s: %s", video_id, exc)
+            return None
+
+        items = resp.get("items", [])
+        if not items:
+            return None
+
+        item = items[0]
+        snippet = item.get("snippet", {})
+        title = snippet.get("title", video_id)
+        raw_duration = item.get("contentDetails", {}).get("duration", "")
+
+        return PlaylistItem(
+            video_id=video_id,
+            title=title,
+            description=snippet.get("description", ""),
+            channel_id=snippet.get("channelId", ""),
+            channel_name=snippet.get("channelTitle", ""),
+            duration_seconds=_parse_iso8601_duration(raw_duration) if raw_duration else None,
+            is_available=title not in ("Deleted video", "Private video"),
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

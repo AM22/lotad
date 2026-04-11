@@ -99,12 +99,15 @@ async def _run_playlist(playlist_id: str, *, resume: bool, limit: int | None) ->
 async def _run_video(video_id: str) -> None:
     settings = get_settings()
 
-    from lotad.ingestion.youtube_client import PlaylistItem
+    from lotad.ingestion.youtube_client import PlaylistItem, YouTubeClient
 
     console.print(f"Ingesting video [bold]{video_id}[/bold]\u2026")
 
-    # Build a minimal PlaylistItem without a full YouTube API call
-    item = PlaylistItem(video_id=video_id, title=video_id)
+    yt = YouTubeClient(settings)
+    item = yt.get_video(video_id)
+    if item is None:
+        console.print("[yellow]Warning: could not fetch video metadata from YouTube; using stub.[/yellow]")
+        item = PlaylistItem(video_id=video_id, title=video_id)
 
     async with IngestPipeline(settings) as pipeline:
         matched = await pipeline.ingest_video(item)
