@@ -4,6 +4,7 @@ import click
 
 from lotad.cli.db import db
 from lotad.cli.ingest import ingest
+from lotad.cli.originals import originals
 from lotad.cli.score import score
 from lotad.cli.sync import sync
 from lotad.cli.tasks import tasks
@@ -17,6 +18,7 @@ def cli() -> None:
 
 cli.add_command(db)
 cli.add_command(ingest)
+cli.add_command(originals)
 cli.add_command(tasks)
 cli.add_command(score)
 cli.add_command(sync)

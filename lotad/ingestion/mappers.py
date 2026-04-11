@@ -19,6 +19,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import difflib
 import logging
 from datetime import date
 from typing import Any
@@ -29,7 +30,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from lotad.db.models import (
     ArtistType,
+    ConfidenceLevel,
     DiscType,
+    MediaType,
     SongRole,
     SongType,
     album_circles,
@@ -37,13 +40,21 @@ from lotad.db.models import (
     albums,
     artists,
     characters,
+    original_song_characters,
     original_songs,
     song_artists,
     song_characters,
     song_tags,
     songs,
+    works,
 )
-from lotad.ingestion.touhoudb_models import AlbumDetail, ArtistForAlbum, ArtistForSong, SongDetail
+from lotad.ingestion.touhoudb_models import (
+    AlbumDetail,
+    AlbumSummary,
+    ArtistForAlbum,
+    ArtistForSong,
+    SongDetail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -222,8 +233,6 @@ def map_song_to_db(detail: SongDetail, conn: Connection) -> int:
             is_original_composition=is_orig,
             song_type=song_type,
             publish_date=_parse_publish_date(detail.publishDate),
-            min_milli_bpm=detail.minMilliBpm,
-            max_milli_bpm=detail.maxMilliBpm,
             touhoudb_url=f"https://touhoudb.com/S/{detail.id}",
         )
         .on_conflict_do_update(
@@ -235,8 +244,6 @@ def map_song_to_db(detail: SongDetail, conn: Connection) -> int:
                 "is_original_composition": is_orig,
                 "song_type": song_type,
                 "publish_date": _parse_publish_date(detail.publishDate),
-                "min_milli_bpm": detail.minMilliBpm,
-                "max_milli_bpm": detail.maxMilliBpm,
                 "updated_at": sa.func.now(),
             },
         )
@@ -477,18 +484,9 @@ def link_song_originals(
     linked.  IDs that have no matching ``original_songs`` row are silently
     skipped here — the caller should surface a task.
 
-    KNOWN LIMITATION: The seeded ``original_songs`` rows have
-    ``touhoudb_id = NULL`` (they were seeded from game names, not TouhouDB).
-    Until ``touhoudb_id`` is backfilled, every call to this function returns
-    an empty list and the pipeline creates a FILL_MISSING_INFO task for every
-    matched song.
-
-    TODO (M5 — original song backfill): Add a one-time migration step that:
-    1. Fetches each original song from TouhouDB by name + work title.
-    2. Fuzzy-matches against our seeded ``original_songs`` rows.
-    3. Sets ``original_songs.touhoudb_id`` for confirmed matches.
-    After that step, this function will start returning non-empty lists and
-    ``song_originals`` will be populated correctly.
+    KNOWN LIMITATION: The seeded ``original_songs`` rows previously had
+    ``touhoudb_id = NULL``.  Once ``lotad originals scrape`` has been run,
+    ``touhoudb_id`` is populated and this function will correctly link songs.
     """
     from lotad.db.models import song_originals  # avoid circular at module level
 
@@ -506,4 +504,280 @@ def link_song_originals(
             .on_conflict_do_nothing()
         )
         linked.append(row.id)
+    return linked
+
+
+# ---------------------------------------------------------------------------
+# Original-song scraper helpers (called by `lotad originals scrape`)
+# ---------------------------------------------------------------------------
+
+# Maps TouhouDB album discType (lowercase) to our works.media_type for year-based
+# work matching.  Only types with a clear mapping are included; unknown types fall
+# through to the difflib name-match strategy.
+_DISC_TYPE_TO_MEDIA_TYPE: dict[str, MediaType] = {
+    "game": MediaType.GAME,
+    # ZUN's standalone music CDs (Ghostly Field Club series, etc.) appear as
+    # "Album" or "Other" disc types on TouhouDB.
+    "album": MediaType.MUSIC_CD,
+    "single": MediaType.MUSIC_CD,
+    "ep": MediaType.MUSIC_CD,
+    "other": MediaType.MUSIC_CD,
+}
+
+# Maps TouhouDB tag urlSlug values to stage integers.
+# 0=title theme, 1-6=stage N, 7=extra stage, 8=ending theme, 9=staff roll.
+_STAGE_SLUG_MAP: dict[str, int] = {
+    "title-theme": 0,
+    "first-stage": 1,
+    "second-stage": 2,
+    "third-stage": 3,
+    "fourth-stage": 4,
+    "fifth-stage": 5,
+    "sixth-stage": 6,
+    "extra-stage": 7,
+    "ending-theme": 8,
+    "staff-roll": 9,
+}
+
+
+def _parse_stage_from_tags(tags: list[Any]) -> int | None:
+    """Derive stage integer from a song's TouhouDB tag list."""
+    for tv in tags:
+        slug = tv.tag.urlSlug.lower() if tv.tag.urlSlug else ""
+        stage = _STAGE_SLUG_MAP.get(slug)
+        if stage is not None:
+            return stage
+    return None
+
+
+def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | None:
+    """
+    Find the best matching ``works.id`` for an original song given its album list.
+    Writes back the matched TouhouDB album ID to ``works.touhoudb_id`` on first match.
+
+    Strategy:
+    0. Fast path: if ``works.touhoudb_id`` already matches any album in the list,
+       return that work immediately (no heuristics needed on re-runs).
+    1. Sort the song's albums by release date (oldest first).
+    2. Map the oldest album's ``discType`` to our ``media_type`` via
+       ``_DISC_TYPE_TO_MEDIA_TYPE``.  If a mapping exists and we have a release
+       year, filter works by **both** ``media_type`` and ``release_year``.
+       This prevents cross-type collisions (e.g. a music CD year matching a game).
+       - Exactly 1 match → done.
+       - Multiple matches → name-similarity tiebreak (rare for music CDs; can
+         happen for games with two releases in the same year).
+    3. Fall back to difflib string match on ``works.name`` vs album name across
+       all works (threshold ≥ 0.6).
+    4. Return None if no confident match is found (caller logs and skips).
+
+    When a match is found via heuristics (strategies 1–3), writes the TouhouDB
+    album ID back to ``works.touhoudb_id`` so future calls use the fast path.
+    """
+    if not albums:
+        return None
+
+    album_ids = {a.id for a in albums}
+
+    # Fetch all works once (including touhoudb_id for fast-path lookup)
+    all_works = conn.execute(
+        sa.select(
+            works.c.id, works.c.name, works.c.release_year, works.c.media_type, works.c.touhoudb_id
+        )
+    ).fetchall()
+    if not all_works:
+        return None
+
+    # Strategy 0: fast path — touhoudb_id already stored on a work
+    for w in all_works:
+        if w.touhoudb_id and w.touhoudb_id in album_ids:
+            return w.id
+
+    # Sort albums by release year ascending, picking the oldest
+    def _sort_key(a: AlbumSummary) -> int:
+        if a.releaseDate and a.releaseDate.year:
+            return a.releaseDate.year
+        return 9999
+
+    sorted_albums = sorted(albums, key=_sort_key)
+    oldest = sorted_albums[0]
+
+    release_year = oldest.releaseDate.year if oldest.releaseDate else None
+    album_name = oldest.defaultName or oldest.name
+
+    matched_work_id: int | None = None
+
+    # Strategy 1: year + media_type match (type-safe — no cross-type collisions)
+    expected_media_type = _DISC_TYPE_TO_MEDIA_TYPE.get(oldest.discType.lower())
+    if expected_media_type and release_year:
+        year_matches = [
+            w
+            for w in all_works
+            if w.media_type == expected_media_type and w.release_year == release_year
+        ]
+        if len(year_matches) == 1:
+            matched_work_id = year_matches[0].id
+        elif len(year_matches) > 1 and album_name:
+            # Tie-break by name similarity (e.g. two games in the same year)
+            logger.warning(
+                "Multiple %s works for year=%d — using name similarity tiebreak",
+                expected_media_type,
+                release_year,
+            )
+            best = max(
+                year_matches,
+                key=lambda w: difflib.SequenceMatcher(
+                    None, w.name.lower(), album_name.lower()
+                ).ratio(),
+            )
+            matched_work_id = best.id
+
+    # Strategy 2: difflib name match across all works
+    if matched_work_id is None and album_name:
+        best_ratio = 0.0
+        best_work_id: int | None = None
+        for w in all_works:
+            ratio = difflib.SequenceMatcher(None, w.name.lower(), album_name.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_work_id = w.id
+
+        if best_ratio >= 0.6:
+            matched_work_id = best_work_id
+        else:
+            logger.warning(
+                "Could not confidently match album %r (year=%s, discType=%s) to any work "
+                "(best ratio=%.2f)",
+                album_name,
+                release_year,
+                oldest.discType,
+                best_ratio,
+            )
+
+    # Write back the TouhouDB album ID so future runs skip heuristics
+    if matched_work_id is not None:
+        conn.execute(
+            works.update()
+            .where(works.c.id == matched_work_id)
+            .where(works.c.touhoudb_id.is_(None))  # don't overwrite an existing mapping
+            .values(touhoudb_id=oldest.id)
+        )
+
+    return matched_work_id
+
+
+def upsert_original_song(detail: SongDetail, work_id: int, conn: Connection) -> int:
+    """
+    Insert or update a row in ``original_songs`` from a TouhouDB ``SongDetail``.
+
+    Keyed on ``touhoudb_id``.  Stage is derived from the song's tags.
+    ``is_boss`` defaults to False — TODO: backfill from TouhouWiki.
+
+    Returns the internal ``original_songs.id``.
+    """
+    additional = [n.strip() for n in detail.additionalNames.split(",") if n.strip()]
+    name_romanized = additional[0] if additional else None
+    stage = _parse_stage_from_tags(detail.tags)
+
+    stmt = (
+        pg_insert(original_songs)
+        .values(
+            touhoudb_id=detail.id,
+            name=detail.name,
+            name_romanized=name_romanized,
+            work_id=work_id,
+            stage=stage,
+            is_boss=False,
+            min_milli_bpm=detail.minMilliBpm,
+            max_milli_bpm=detail.maxMilliBpm,
+            notes=detail.notes,
+        )
+        .on_conflict_do_update(
+            index_elements=["touhoudb_id"],
+            set_={
+                "name": detail.name,
+                "name_romanized": name_romanized,
+                "work_id": work_id,
+                "stage": stage,
+                "min_milli_bpm": detail.minMilliBpm,
+                "max_milli_bpm": detail.maxMilliBpm,
+                "notes": detail.notes,
+            },
+        )
+        .returning(original_songs.c.id)
+    )
+    original_song_id: int = conn.execute(stmt).scalar_one()
+    logger.debug(
+        "Upserted original_song id=%d touhoudb_id=%d %r stage=%s",
+        original_song_id,
+        detail.id,
+        detail.name,
+        stage,
+    )
+    return original_song_id
+
+
+def link_original_song_characters(
+    original_song_id: int,
+    detail: SongDetail,
+    conn: Connection,
+) -> int:
+    """
+    Link Touhou characters to an original song via ``original_song_characters``.
+
+    Characters are identified from the song's artist credits where
+    ``artistType == "Character"``.  Each is upserted to the ``characters``
+    table and linked with ``confidence = MEDIUM`` (50% — source data is
+    reasonable but not verified).
+
+    Returns the number of characters linked.
+    """
+    linked = 0
+    for credit in detail.artists:
+        artist = credit.artist
+        if artist is None:
+            continue
+        if artist.artistType.lower() != "character":
+            continue
+
+        additional = [n.strip() for n in artist.additionalNames.split(",") if n.strip()]
+        name_romanized = additional[0] if additional else None
+        other_names = additional[1:] if len(additional) > 1 else None
+
+        char_stmt = (
+            pg_insert(characters)
+            .values(
+                touhoudb_id=artist.id,
+                name=artist.name,
+                name_romanized=name_romanized,
+                other_names=other_names,
+            )
+            .on_conflict_do_update(
+                index_elements=["touhoudb_id"],
+                set_={
+                    "name": artist.name,
+                    "name_romanized": name_romanized,
+                    "other_names": other_names,
+                },
+            )
+            .returning(characters.c.id)
+        )
+        character_id: int = conn.execute(char_stmt).scalar_one()
+
+        conn.execute(
+            pg_insert(original_song_characters)
+            .values(
+                original_song_id=original_song_id,
+                character_id=character_id,
+                confidence=ConfidenceLevel.MEDIUM,
+            )
+            .on_conflict_do_nothing()
+        )
+        logger.debug(
+            "Linked character %r (touhoudb_id=%d) to original_song %d",
+            artist.name,
+            artist.id,
+            original_song_id,
+        )
+        linked += 1
+
     return linked

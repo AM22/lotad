@@ -34,6 +34,7 @@ from lotad.ingestion.touhoudb_models import (
     ImportedSongList,
     PartialImportedSongs,
     SongDetail,
+    SongDetailList,
 )
 
 logger = logging.getLogger(__name__)
@@ -346,6 +347,56 @@ class TouhouDBClient:
             first.songs.totalCount,
         )
         return matched
+
+    async def get_songs_by_artist(
+        self,
+        artist_id: int,
+        song_type: str = "Original",
+        max_results: int = 50,
+    ) -> list[SongDetail]:
+        """
+        Fetch all songs by an artist filtered by song type.
+
+        Paginates automatically through the full result set using
+        ``GET /api/songs`` with ``artistId`` and ``songTypes`` filters.
+
+        Args:
+            artist_id: TouhouDB artist ID (e.g. 1 for ZUN, 45 for U2 Akiyama).
+            song_type: TouhouDB song type filter (default "Original").
+            max_results: Page size for each API call (default 50).
+
+        Returns:
+            List of full ``SongDetail`` objects (with Artists, Albums, Tags).
+        """
+        all_songs: list[SongDetail] = []
+        start = 0
+
+        while True:
+            data = await self._get(
+                "/songs",
+                artistId=artist_id,
+                songTypes=song_type,
+                fields=_SONG_FIELDS,
+                lang="Default",
+                start=start,
+                maxResults=max_results,
+                getTotalCount="true",
+            )
+            page = SongDetailList.model_validate(data)
+            all_songs.extend(page.items)
+
+            fetched_so_far = start + len(page.items)
+            if fetched_so_far >= page.totalCount or not page.items:
+                break
+            start = fetched_so_far
+
+        logger.info(
+            "get_songs_by_artist artist_id=%d type=%s: fetched %d songs",
+            artist_id,
+            song_type,
+            len(all_songs),
+        )
+        return all_songs
 
     async def get_normalization_count(
         self,
