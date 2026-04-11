@@ -207,6 +207,9 @@ works = sa.Table(
     sa.Column("release_year", sa.Integer, nullable=True),
     # Ordering within canonical games sequence (null for books / music CDs)
     sa.Column("canonical_order", sa.Numeric(5, 1), nullable=True),
+    # TouhouDB album ID for the canonical album representing this work.
+    # Populated by `lotad originals scrape` on first confident match.
+    sa.Column("touhoudb_id", sa.Integer, nullable=True, unique=True),
     sa.Column("notes", sa.Text, nullable=True),
 )
 

@@ -175,9 +175,7 @@ def _resolve_original_song_chain_tasks(conn: sa.Connection) -> int:
                 )
             )
             resolved_count += 1
-            logger.debug(
-                "Resolved FILL_MISSING_INFO task id=%d (song_id=%d)", task.id, song_id
-            )
+            logger.debug("Resolved FILL_MISSING_INFO task id=%d (song_id=%d)", task.id, song_id)
         elif linked:
             # Partial — some originals linked but not all; leave open
             logger.warning(

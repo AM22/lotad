@@ -553,8 +553,11 @@ def _parse_stage_from_tags(tags: list[Any]) -> int | None:
 def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | None:
     """
     Find the best matching ``works.id`` for an original song given its album list.
+    Writes back the matched TouhouDB album ID to ``works.touhoudb_id`` on first match.
 
     Strategy:
+    0. Fast path: if ``works.touhoudb_id`` already matches any album in the list,
+       return that work immediately (no heuristics needed on re-runs).
     1. Sort the song's albums by release date (oldest first).
     2. Map the oldest album's ``discType`` to our ``media_type`` via
        ``_DISC_TYPE_TO_MEDIA_TYPE``.  If a mapping exists and we have a release
@@ -566,16 +569,28 @@ def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | N
     3. Fall back to difflib string match on ``works.name`` vs album name across
        all works (threshold ≥ 0.6).
     4. Return None if no confident match is found (caller logs and skips).
+
+    When a match is found via heuristics (strategies 1–3), writes the TouhouDB
+    album ID back to ``works.touhoudb_id`` so future calls use the fast path.
     """
     if not albums:
         return None
 
-    # Fetch all works once
+    album_ids = {a.id for a in albums}
+
+    # Fetch all works once (including touhoudb_id for fast-path lookup)
     all_works = conn.execute(
-        sa.select(works.c.id, works.c.name, works.c.release_year, works.c.media_type)
+        sa.select(
+            works.c.id, works.c.name, works.c.release_year, works.c.media_type, works.c.touhoudb_id
+        )
     ).fetchall()
     if not all_works:
         return None
+
+    # Strategy 0: fast path — touhoudb_id already stored on a work
+    for w in all_works:
+        if w.touhoudb_id and w.touhoudb_id in album_ids:
+            return w.id
 
     # Sort albums by release year ascending, picking the oldest
     def _sort_key(a: AlbumSummary) -> int:
@@ -589,16 +604,19 @@ def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | N
     release_year = oldest.releaseDate.year if oldest.releaseDate else None
     album_name = oldest.defaultName or oldest.name
 
+    matched_work_id: int | None = None
+
     # Strategy 1: year + media_type match (type-safe — no cross-type collisions)
     expected_media_type = _DISC_TYPE_TO_MEDIA_TYPE.get(oldest.discType.lower())
     if expected_media_type and release_year:
         year_matches = [
-            w for w in all_works
+            w
+            for w in all_works
             if w.media_type == expected_media_type and w.release_year == release_year
         ]
         if len(year_matches) == 1:
-            return year_matches[0].id
-        if len(year_matches) > 1 and album_name:
+            matched_work_id = year_matches[0].id
+        elif len(year_matches) > 1 and album_name:
             # Tie-break by name similarity (e.g. two games in the same year)
             logger.warning(
                 "Multiple %s works for year=%d — using name similarity tiebreak",
@@ -607,33 +625,44 @@ def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | N
             )
             best = max(
                 year_matches,
-                key=lambda w: difflib.SequenceMatcher(None, w.name.lower(), album_name.lower()).ratio(),
+                key=lambda w: difflib.SequenceMatcher(
+                    None, w.name.lower(), album_name.lower()
+                ).ratio(),
             )
-            return best.id
+            matched_work_id = best.id
 
     # Strategy 2: difflib name match across all works
-    if not album_name:
-        return None
+    if matched_work_id is None and album_name:
+        best_ratio = 0.0
+        best_work_id: int | None = None
+        for w in all_works:
+            ratio = difflib.SequenceMatcher(None, w.name.lower(), album_name.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_work_id = w.id
 
-    best_ratio = 0.0
-    best_work_id: int | None = None
-    for w in all_works:
-        ratio = difflib.SequenceMatcher(None, w.name.lower(), album_name.lower()).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_work_id = w.id
+        if best_ratio >= 0.6:
+            matched_work_id = best_work_id
+        else:
+            logger.warning(
+                "Could not confidently match album %r (year=%s, discType=%s) to any work "
+                "(best ratio=%.2f)",
+                album_name,
+                release_year,
+                oldest.discType,
+                best_ratio,
+            )
 
-    if best_ratio >= 0.6:
-        return best_work_id
+    # Write back the TouhouDB album ID so future runs skip heuristics
+    if matched_work_id is not None:
+        conn.execute(
+            works.update()
+            .where(works.c.id == matched_work_id)
+            .where(works.c.touhoudb_id.is_(None))  # don't overwrite an existing mapping
+            .values(touhoudb_id=oldest.id)
+        )
 
-    logger.warning(
-        "Could not confidently match album %r (year=%s, discType=%s) to any work (best ratio=%.2f)",
-        album_name,
-        release_year,
-        oldest.discType,
-        best_ratio,
-    )
-    return None
+    return matched_work_id
 
 
 def upsert_original_song(detail: SongDetail, work_id: int, conn: Connection) -> int:
