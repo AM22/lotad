@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 import click
+from rich.cells import cell_len
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
@@ -61,11 +62,21 @@ async def _run_playlist(playlist_id: str, *, resume: bool, limit: int | None) ->
         task_id = progress.add_task("Ingesting\u2026", total=None)
 
         def on_progress(done: int, total: int, title: str) -> None:
+            # Truncate by display width (wide chars like CJK/emoji count as 2 columns)
+            max_width = 60
+            width = 0
+            cutoff = len(title)
+            for i, ch in enumerate(title):
+                w = cell_len(ch)
+                if width + w > max_width:
+                    cutoff = i
+                    break
+                width += w
             progress.update(
                 task_id,
                 completed=done,
                 total=total,
-                description=f"[bold blue]{title[:60]}",
+                description=f"[bold blue]{title[:cutoff]}",
             )
 
         async with IngestPipeline(settings) as pipeline:
