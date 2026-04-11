@@ -19,6 +19,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import difflib
 import logging
 from datetime import date
 from typing import Any
@@ -26,8 +27,6 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy import Connection
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-import difflib
 
 from lotad.db.models import (
     ArtistType,
@@ -512,6 +511,19 @@ def link_song_originals(
 # Original-song scraper helpers (called by `lotad originals scrape`)
 # ---------------------------------------------------------------------------
 
+# Maps TouhouDB album discType (lowercase) to our works.media_type for year-based
+# work matching.  Only types with a clear mapping are included; unknown types fall
+# through to the difflib name-match strategy.
+_DISC_TYPE_TO_MEDIA_TYPE: dict[str, MediaType] = {
+    "game": MediaType.GAME,
+    # ZUN's standalone music CDs (Ghostly Field Club series, etc.) appear as
+    # "Album" or "Other" disc types on TouhouDB.
+    "album": MediaType.MUSIC_CD,
+    "single": MediaType.MUSIC_CD,
+    "ep": MediaType.MUSIC_CD,
+    "other": MediaType.MUSIC_CD,
+}
+
 # Maps TouhouDB tag urlSlug values to stage integers.
 # 0=title theme, 1-6=stage N, 7=extra stage, 8=ending theme, 9=staff roll.
 _STAGE_SLUG_MAP: dict[str, int] = {
@@ -544,12 +556,16 @@ def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | N
 
     Strategy:
     1. Sort the song's albums by release date (oldest first).
-    2. If the oldest album has discType=="Game", match by release year against
-       works with media_type=GAME.  If multiple works share that year, pick the
-       one with the highest name similarity (rare edge case).
-    3. For non-game disc types or if year matching fails, fall back to difflib
-       string matching on works.name vs album.defaultName (threshold ≥ 0.6).
-    4. Return None if no confident match is found (caller skips/logs).
+    2. Map the oldest album's ``discType`` to our ``media_type`` via
+       ``_DISC_TYPE_TO_MEDIA_TYPE``.  If a mapping exists and we have a release
+       year, filter works by **both** ``media_type`` and ``release_year``.
+       This prevents cross-type collisions (e.g. a music CD year matching a game).
+       - Exactly 1 match → done.
+       - Multiple matches → name-similarity tiebreak (rare for music CDs; can
+         happen for games with two releases in the same year).
+    3. Fall back to difflib string match on ``works.name`` vs album name across
+       all works (threshold ≥ 0.6).
+    4. Return None if no confident match is found (caller logs and skips).
     """
     if not albums:
         return None
@@ -571,27 +587,31 @@ def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | N
     oldest = sorted_albums[0]
 
     release_year = oldest.releaseDate.year if oldest.releaseDate else None
+    album_name = oldest.defaultName or oldest.name
 
-    # Strategy 1: game disc type — match by year
-    if oldest.discType.lower() == "game" and release_year:
-        game_works = [w for w in all_works if w.media_type == MediaType.GAME and w.release_year == release_year]
-        if len(game_works) == 1:
-            return game_works[0].id
-        if len(game_works) > 1:
-            # Tie-break by name similarity
+    # Strategy 1: year + media_type match (type-safe — no cross-type collisions)
+    expected_media_type = _DISC_TYPE_TO_MEDIA_TYPE.get(oldest.discType.lower())
+    if expected_media_type and release_year:
+        year_matches = [
+            w for w in all_works
+            if w.media_type == expected_media_type and w.release_year == release_year
+        ]
+        if len(year_matches) == 1:
+            return year_matches[0].id
+        if len(year_matches) > 1 and album_name:
+            # Tie-break by name similarity (e.g. two games in the same year)
             logger.warning(
-                "Multiple works found for release_year=%d — using name similarity to break tie",
+                "Multiple %s works for year=%d — using name similarity tiebreak",
+                expected_media_type,
                 release_year,
             )
-            album_name = oldest.defaultName or oldest.name
             best = max(
-                game_works,
+                year_matches,
                 key=lambda w: difflib.SequenceMatcher(None, w.name.lower(), album_name.lower()).ratio(),
             )
             return best.id
 
-    # Strategy 2: difflib name match against all works
-    album_name = oldest.defaultName or oldest.name
+    # Strategy 2: difflib name match across all works
     if not album_name:
         return None
 
@@ -607,9 +627,10 @@ def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | N
         return best_work_id
 
     logger.warning(
-        "Could not confidently match album %r (year=%s) to any work (best ratio=%.2f)",
+        "Could not confidently match album %r (year=%s, discType=%s) to any work (best ratio=%.2f)",
         album_name,
         release_year,
+        oldest.discType,
         best_ratio,
     )
     return None
@@ -637,6 +658,8 @@ def upsert_original_song(detail: SongDetail, work_id: int, conn: Connection) -> 
             work_id=work_id,
             stage=stage,
             is_boss=False,
+            min_milli_bpm=detail.minMilliBpm,
+            max_milli_bpm=detail.maxMilliBpm,
             notes=detail.notes,
         )
         .on_conflict_do_update(
@@ -646,6 +669,8 @@ def upsert_original_song(detail: SongDetail, work_id: int, conn: Connection) -> 
                 "name_romanized": name_romanized,
                 "work_id": work_id,
                 "stage": stage,
+                "min_milli_bpm": detail.minMilliBpm,
+                "max_milli_bpm": detail.maxMilliBpm,
                 "notes": detail.notes,
             },
         )

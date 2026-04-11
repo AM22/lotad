@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import click
 import sqlalchemy as sa
@@ -42,7 +42,13 @@ def originals() -> None:
     default=False,
     help="Print what would be inserted without writing to the database.",
 )
-def scrape(dry_run: bool) -> None:
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    help="Process at most N songs (useful with --dry-run for testing).",
+)
+def scrape(dry_run: bool, limit: int | None) -> None:
     """Scrape all original songs by ZUN and U2 Akiyama from TouhouDB.
 
     Upserts them into original_songs, links characters via
@@ -50,10 +56,10 @@ def scrape(dry_run: bool) -> None:
     FILL_MISSING_INFO tasks whose original_touhoudb_ids match a newly
     inserted song.
     """
-    asyncio.run(_run_scrape(dry_run=dry_run))
+    asyncio.run(_run_scrape(dry_run=dry_run, limit=limit))
 
 
-async def _run_scrape(*, dry_run: bool) -> None:
+async def _run_scrape(*, dry_run: bool, limit: int | None) -> None:
     settings = get_settings()
     engine = get_engine()
 
@@ -72,6 +78,8 @@ async def _run_scrape(*, dry_run: bool) -> None:
     for s in u2_songs:
         all_songs_by_id.setdefault(s.id, s)
     all_songs = list(all_songs_by_id.values())
+    if limit is not None:
+        all_songs = all_songs[:limit]
 
     console.print(f"Total unique original songs to process: [bold]{len(all_songs)}[/bold]")
 
@@ -125,17 +133,18 @@ async def _run_scrape(*, dry_run: bool) -> None:
                 stats["characters_linked"] += chars
 
             # Resolve FILL_MISSING_INFO tasks now that original_songs has touhoudb_ids
-            resolved = _resolve_fill_missing_info_tasks(conn)
+            resolved = _resolve_original_song_chain_tasks(conn)
             stats["tasks_resolved"] = resolved
 
     _print_summary(stats, dry_run=dry_run)
 
 
-def _resolve_fill_missing_info_tasks(conn: sa.Connection) -> int:
+def _resolve_original_song_chain_tasks(conn: sa.Connection) -> int:
     """
-    For each open FILL_MISSING_INFO task, attempt to link song_originals using
-    the now-populated original_songs.touhoudb_id.  Resolve tasks where all
-    originals were successfully linked.
+    Resolve FILL_MISSING_INFO tasks raised because an original song's chain was
+    not yet in the DB.  Now that ``original_songs`` has been populated with
+    ``touhoudb_id`` values, attempt to link ``song_originals`` for each open task
+    and mark it RESOLVED when all originals are successfully linked.
 
     Returns the number of tasks resolved.
     """
@@ -162,7 +171,7 @@ def _resolve_fill_missing_info_tasks(conn: sa.Connection) -> int:
                 .where(tasks.c.id == task.id)
                 .values(
                     status=TaskStatus.RESOLVED,
-                    resolved_at=datetime.now(timezone.utc),
+                    resolved_at=datetime.now(UTC),
                 )
             )
             resolved_count += 1

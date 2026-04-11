@@ -224,6 +224,10 @@ original_songs = sa.Table(
     # TODO (future): backfill is_boss from TouhouWiki — TouhouDB does not
     # differentiate boss themes from stage themes.
     sa.Column("is_boss", sa.Boolean, nullable=False, server_default="false"),
+    # BPM is a property of ZUN's original compositions (not arrangements).
+    # Stored as millibpm integers (e.g. 174000 = 174 BPM) — mirrors TouhouDB.
+    sa.Column("min_milli_bpm", sa.Integer, nullable=True),
+    sa.Column("max_milli_bpm", sa.Integer, nullable=True),
     sa.Column("notes", sa.Text, nullable=True),
 )
 
