@@ -99,6 +99,26 @@ class SongSummary(_Base):
     additionalNames: str = ""
 
 
+class SongNotes(_Base):
+    """Bilingual notes object returned on song detail responses."""
+
+    english: str = ""
+    original: str = ""  # usually the Japanese/romanized text
+
+    def all_text(self) -> str:
+        """Combined text of both fields for regex scanning."""
+        return f"{self.english}\n{self.original}"
+
+
+class WebLink(_Base):
+    """An external link attached to a song (official site, reference, etc.)."""
+
+    url: str = ""
+    category: str = ""  # "Official", "Reference", "Other", etc.
+    description: str = ""
+    disabled: bool = False
+
+
 class SongDetail(_Base):
     """Full song detail returned by GET /api/songs/{id}."""
 
@@ -111,12 +131,14 @@ class SongDetail(_Base):
     minMilliBpm: int | None = None
     maxMilliBpm: int | None = None
     originalVersionId: int | None = None
-    notes: str | None = None  # HTML notes/description from TouhouDB
+    # notes is a structured object {english, original}; requires fields=Notes or always returned
+    notes: SongNotes | None = None
     artistString: str = ""  # human-readable "circle feat. vocalist"
     artists: list[ArtistForSong] = Field(default_factory=list)
     albums: list[AlbumSummary] = Field(default_factory=list)
     tags: list[TagVote] = Field(default_factory=list)
     pvs: list[PvInfo] = Field(default_factory=list)
+    webLinks: list[WebLink] = Field(default_factory=list)  # requires fields=WebLinks
 
     @property
     def has_lyrics(self) -> bool:
