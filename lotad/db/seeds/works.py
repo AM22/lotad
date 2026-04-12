@@ -377,7 +377,7 @@ SEIHOU_GAMES = [
         "media_type": "GAME",
         "release_year": 2000,
         "touhoudb_id": 28,  # https://touhoudb.com/Al/28
-        "notes": "Seihou #1; co-developed with Twilight Frontier",
+        "notes": "Seihou #1; co-developed with Amusement Makers",
     },
     {
         "name": "Kioh Gyoku",
@@ -385,7 +385,7 @@ SEIHOU_GAMES = [
         "media_type": "GAME",
         "release_year": 2001,
         "touhoudb_id": 136,  # https://touhoudb.com/Al/136
-        "notes": "Seihou #2; co-developed with Twilight Frontier",
+        "notes": "Seihou #2; co-developed with Amusement Makers",
     },
 ]
 
