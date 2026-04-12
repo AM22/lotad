@@ -213,26 +213,24 @@ class ReleaseEvent(_Base):
     category: str = ""
 
 
-class OriginalRelease(_Base):
-    releaseEvents: list[ReleaseEvent] = Field(default_factory=list)
-
-
 class AlbumDetail(_Base):
     """Full album detail returned by GET /api/albums/{id}."""
 
     id: int
     name: str
-    additionalNames: str = ""
+    additionalNames: str = ""  # requires AdditionalNames in fields param
     discType: str = "Album"
     releaseDate: ReleaseDate | None = None
     catalogNumber: str | None = None
     barcode: str | None = None
-    description: str | None = None
+    description: str | None = None  # requires Description in fields param
     artistString: str = ""
     artists: list[ArtistForAlbum] = Field(default_factory=list)
     tags: list[TagVote] = Field(default_factory=list)
     tracks: list[AlbumTrack] = Field(default_factory=list)
-    originalRelease: OriginalRelease | None = None
+    # Returned as top-level list when ReleaseEvent is in the fields param.
+    # (The API also returns a singular releaseEvent; we use the list form.)
+    releaseEvents: list[ReleaseEvent] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

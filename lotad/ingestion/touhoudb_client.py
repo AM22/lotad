@@ -45,13 +45,12 @@ _YOUTUBE_ID_RE = re.compile(
 )
 
 # Fields requested from TouhouDB for full song detail.
-# Note: additionalNames and notes are returned in the base song response
-# without needing to be listed here — they are NOT valid SongOptionalField
-# values and will cause a 400 if requested explicitly.
-_SONG_FIELDS = "Artists,Albums,Tags,PVs"
+# Note: Notes is NOT a valid SongOptionalField and causes a 400 if requested.
+# notes is returned in the base response without needing to be listed here.
+_SONG_FIELDS = "Artists,Albums,Tags,PVs,AdditionalNames"
 # Extended fields used when resolving original chains — adds WebLinks so we can
 # detect multiple-original references in notes and unofficial link entries.
-_CHAIN_FIELDS = "Artists,Albums,Tags,PVs,WebLinks"
+_CHAIN_FIELDS = "Artists,Albums,Tags,PVs,WebLinks,AdditionalNames"
 # Fields requested for album detail (includes Tracks)
 _ALBUM_FIELDS = "Artists,Tags,Tracks,AdditionalNames,Description,ReleaseEvent"
 # Fields requested for artist detail

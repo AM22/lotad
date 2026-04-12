@@ -457,14 +457,13 @@ def map_album_to_db(detail: AlbumDetail, conn: Connection) -> int:
             )
         )
 
-    # Upsert release events
-    if detail.originalRelease:
-        for event in detail.originalRelease.releaseEvents:
-            conn.execute(
-                pg_insert(album_events)
-                .values(album_id=album_id, event_name=event.name, touhoudb_id=event.id)
-                .on_conflict_do_nothing()
-            )
+    # Upsert release events (top-level list returned when ReleaseEvent is in fields)
+    for event in detail.releaseEvents:
+        conn.execute(
+            pg_insert(album_events)
+            .values(album_id=album_id, event_name=event.name, touhoudb_id=event.id)
+            .on_conflict_do_nothing()
+        )
 
     logger.debug("Upserted album id=%d touhoudb_id=%d %r", album_id, detail.id, detail.name)
     return album_id
