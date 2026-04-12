@@ -562,16 +562,23 @@ class IngestPipeline:
         related_song_id: int | None = None,
         related_video_id: int | None = None,
     ) -> None:
-        """Create a task row; idempotent — skips if an OPEN task of same type+song exists."""
+        """Create a task row; idempotent — skips if an OPEN task of same type+song/video exists."""
+        dedup_filter = None
         if related_song_id is not None:
+            dedup_filter = sa.and_(
+                tasks.c.task_type == task_type,
+                tasks.c.related_song_id == related_song_id,
+                tasks.c.status == TaskStatus.OPEN,
+            )
+        elif related_video_id is not None:
+            dedup_filter = sa.and_(
+                tasks.c.task_type == task_type,
+                tasks.c.related_video_id == related_video_id,
+                tasks.c.status == TaskStatus.OPEN,
+            )
+        if dedup_filter is not None:
             existing = conn.execute(
-                sa.select(tasks.c.id).where(
-                    sa.and_(
-                        tasks.c.task_type == task_type,
-                        tasks.c.related_song_id == related_song_id,
-                        tasks.c.status == TaskStatus.OPEN,
-                    )
-                )
+                sa.select(tasks.c.id).where(dedup_filter)
             ).one_or_none()
             if existing:
                 return
@@ -591,11 +598,18 @@ class IngestPipeline:
         """Create an INGEST_FAILED task outside a transaction (best-effort)."""
         try:
             with self._engine.begin() as conn:
+                row = conn.execute(
+                    sa.select(youtube_videos.c.id).where(
+                        youtube_videos.c.video_id == item.video_id
+                    )
+                ).one_or_none()
+                yt_video_db_id = row[0] if row else None
                 self._create_task(
                     TaskType.INGEST_FAILED,
                     f"Exception during ingest: {item.title!r}",
                     {"video_id": item.video_id, "title": item.title},
                     conn,
+                    related_video_id=yt_video_db_id,
                 )
         except Exception:
             logger.exception("Could not create INGEST_FAILED task for %s", item.video_id)
