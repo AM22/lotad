@@ -22,7 +22,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_constraint("album_tracks_youtube_video_id_fkey", "album_tracks", type_="foreignkey")
+    op.drop_constraint("fk_album_tracks_youtube_video_id_youtube_videos", "album_tracks", type_="foreignkey")
     op.drop_column("album_tracks", "youtube_video_id")
     op.drop_column("album_tracks", "youtube_timestamp_seconds")
     op.add_column("album_events", sa.Column("touhoudb_id", sa.Integer(), nullable=True))
