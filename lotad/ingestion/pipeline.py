@@ -46,7 +46,7 @@ from lotad.db.models import (
 )
 from lotad.db.session import get_engine
 from lotad.ingestion.http_client import CircuitBreakerOpen
-from lotad.ingestion.mappers import link_song_originals, map_song_to_db
+from lotad.ingestion.mappers import link_album_tracks, link_song_originals, map_album_to_db, map_song_to_db
 from lotad.ingestion.touhoudb_client import TouhouDBClient
 from lotad.ingestion.touhoudb_models import SongDetail
 from lotad.ingestion.youtube_client import PlaylistItem, YouTubeClient
@@ -382,6 +382,25 @@ class IngestPipeline:
 
             # 3. Map song to DB
             song_id = map_song_to_db(song_detail, conn)
+
+            # 3.5. Ingest albums this song appears on
+            for album_summary in song_detail.albums:
+                try:
+                    album_detail = await self._tdb.get_album(album_summary.id)
+                    album_db_id = map_album_to_db(album_detail, conn)
+                    n_linked = link_album_tracks(album_db_id, album_detail, conn)
+                    logger.debug(
+                        "Ingested album touhoudb_id=%d %r — linked %d tracks",
+                        album_summary.id,
+                        album_summary.name,
+                        n_linked,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to ingest album touhoudb_id=%d for song %d — skipping",
+                        album_summary.id,
+                        song_id,
+                    )
 
             # 4. Resolve original chain + link
             if song_detail.originalVersionId is not None:
