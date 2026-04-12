@@ -422,10 +422,15 @@ class TouhouDBClient:
         Paginates automatically through the full result set using
         ``GET /api/songs`` with ``artistId`` and ``songTypes`` filters.
 
-        ``childVoicebanks=false`` is critical here: TouhouDB associates every
-        Touhou character with ZUN (their creator), so without this flag the
-        endpoint returns thousands of fan-made originals featuring any Touhou
-        character — not just ZUN's own compositions.
+        Two non-obvious parameters are required to get correct results:
+        - ``childTags=false``: without this the endpoint expands to songs linked
+          via tag hierarchies, pulling in unrelated content.
+        - ``artistParticipationStatus=Everything``: required alongside artistId
+          for the filter to be applied correctly by the TouhouDB backend.
+
+        (``childVoicebanks`` is not a real parameter on this endpoint and is
+        silently ignored — confirmed by comparing against TouhouDB's own web
+        search request for the same query.)
 
         Args:
             artist_id: TouhouDB artist ID (e.g. 1 for ZUN, 45 for U2 Akiyama).
@@ -441,8 +446,9 @@ class TouhouDBClient:
         while True:
             data = await self._get(
                 "/songs",
-                artistId=artist_id,
-                childVoicebanks="false",
+                **{"artistId[]": artist_id},
+                childTags="false",
+                artistParticipationStatus="Everything",
                 songTypes=song_type,
                 fields=_SONG_FIELDS,
                 lang="Default",
