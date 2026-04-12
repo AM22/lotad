@@ -665,18 +665,23 @@ def match_work_for_song(albums: list[AlbumSummary], conn: Connection) -> int | N
     return matched_work_id
 
 
-def upsert_original_song(detail: SongDetail, work_id: int, conn: Connection) -> int:
+def upsert_original_song(detail: SongDetail, work_id: int | None, conn: Connection) -> int:
     """
     Insert or update a row in ``original_songs`` from a TouhouDB ``SongDetail``.
 
     Keyed on ``touhoudb_id``.  Stage is derived from the song's tags.
     ``is_boss`` defaults to False — TODO: backfill from TouhouWiki.
 
+    ``work_id`` may be None for songs whose source work is not (yet) seeded —
+    e.g. unused tracks, non-Touhou ZUN games without a work row.
+
     Returns the internal ``original_songs.id``.
     """
     additional = [n.strip() for n in detail.additionalNames.split(",") if n.strip()]
     name_romanized = additional[0] if additional else None
     stage = _parse_stage_from_tags(detail.tags)
+    # SongNotes is a structured object; flatten to plain text for DB storage.
+    notes_text = (detail.notes.all_text() or None) if detail.notes else None
 
     stmt = (
         pg_insert(original_songs)
@@ -689,7 +694,7 @@ def upsert_original_song(detail: SongDetail, work_id: int, conn: Connection) -> 
             is_boss=False,
             min_milli_bpm=detail.minMilliBpm,
             max_milli_bpm=detail.maxMilliBpm,
-            notes=detail.notes,
+            notes=notes_text,
         )
         .on_conflict_do_update(
             index_elements=["touhoudb_id"],
@@ -700,7 +705,7 @@ def upsert_original_song(detail: SongDetail, work_id: int, conn: Connection) -> 
                 "stage": stage,
                 "min_milli_bpm": detail.minMilliBpm,
                 "max_milli_bpm": detail.maxMilliBpm,
-                "notes": detail.notes,
+                "notes": notes_text,
             },
         )
         .returning(original_songs.c.id)

@@ -86,7 +86,7 @@ async def _run_scrape(*, dry_run: bool, limit: int | None) -> None:
     stats = {
         "upserted": 0,
         "characters_linked": 0,
-        "skipped_no_work": 0,
+        "no_work": 0,
         "tasks_resolved": 0,
     }
 
@@ -94,37 +94,28 @@ async def _run_scrape(*, dry_run: bool, limit: int | None) -> None:
         with engine.connect() as conn:
             for detail in all_songs:
                 work_id = match_work_for_song(detail.albums, conn)
-                if work_id is None:
-                    console.print(
-                        f"  [red]SKIP[/red] {detail.name!r} (touhoudb_id={detail.id})"
-                        " — no work match"
-                    )
-                    stats["skipped_no_work"] += 1
-                    continue
                 stage = _stage_label(detail)
                 char_count = sum(
                     1
                     for c in detail.artists
                     if c.artist and c.artist.artistType.lower() == "character"
                 )
+                work_str = f"work_id={work_id}" if work_id is not None else "no work"
                 console.print(
                     f"  [green]WOULD INSERT[/green] {detail.name!r}"
-                    f" (touhoudb_id={detail.id}, work_id={work_id},"
+                    f" (touhoudb_id={detail.id}, {work_str},"
                     f" stage={stage}, characters={char_count})"
                 )
                 stats["upserted"] += 1
                 stats["characters_linked"] += char_count
+                if work_id is None:
+                    stats["no_work"] += 1
     else:
         with engine.begin() as conn:
             for detail in all_songs:
                 work_id = match_work_for_song(detail.albums, conn)
                 if work_id is None:
-                    console.print(
-                        f"  [red]SKIP[/red] {detail.name!r} (touhoudb_id={detail.id})"
-                        " — no work match"
-                    )
-                    stats["skipped_no_work"] += 1
-                    continue
+                    stats["no_work"] += 1
 
                 original_song_id = upsert_original_song(detail, work_id, conn)
                 stats["upserted"] += 1
@@ -204,8 +195,8 @@ def _print_summary(stats: dict[str, int], *, dry_run: bool) -> None:
     prefix = "[yellow]DRY RUN[/yellow] — " if dry_run else ""
     console.print(
         f"\n{prefix}[bold]Done.[/bold]\n"
-        f"  Original songs upserted : {stats['upserted']}\n"
+        f"  Original songs upserted  : {stats['upserted']}\n"
         f"  Characters linked        : {stats['characters_linked']}\n"
-        f"  Songs skipped (no work)  : {stats['skipped_no_work']}\n"
+        f"  Songs without work match : {stats['no_work']}\n"
         f"  Tasks resolved           : {stats['tasks_resolved']}"
     )
