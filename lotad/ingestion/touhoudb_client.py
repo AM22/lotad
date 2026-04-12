@@ -422,12 +422,6 @@ class TouhouDBClient:
         Paginates automatically through the full result set using
         ``GET /api/songs`` with ``artistId`` and ``songTypes`` filters.
 
-        Two non-obvious parameters are required to get correct results:
-        - ``childTags=false``: without this the endpoint expands to songs linked
-          via tag hierarchies, pulling in unrelated content.
-        - ``artistParticipationStatus=Everything``: required alongside artistId
-          for the filter to be applied correctly by the TouhouDB backend.
-
         Args:
             artist_id: TouhouDB artist ID (e.g. 1 for ZUN, 45 for U2 Akiyama).
             song_type: TouhouDB song type filter (default "Original").
