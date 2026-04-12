@@ -384,11 +384,15 @@ class IngestPipeline:
             song_id = map_song_to_db(song_detail, conn)
 
             # 4. Resolve original chain + link
+            # Start the chain at the song itself, not at originalVersionId.
+            # resolve_original_chain needs to pass song_detail as _parent_detail
+            # when it recurses into the direct parent, so that the penultimate-node
+            # scan for extra originals (medleys encoded in notes/webLinks) fires
+            # with the correct context.  Starting at originalVersionId skips the
+            # song entirely, leaving _parent_detail=None at the leaf.
             if song_detail.originalVersionId is not None:
                 try:
-                    original_ids = await self._tdb.resolve_original_chain(
-                        song_detail.originalVersionId
-                    )
+                    original_ids = await self._tdb.resolve_original_chain(song_detail.id)
                     linked = link_song_originals(song_id, original_ids, conn)
                     if not linked:
                         # Original song not seeded yet
