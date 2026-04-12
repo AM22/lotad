@@ -622,58 +622,58 @@ Each bullet below corresponds to roughly one implementable unit of work (think: 
 
 ---
 
-#### Milestone 2 — TouhouDB Integration Layer *(~1 week)*
+#### Milestone 2 — TouhouDB Integration Layer *(Complete)*
 
 **HTTP client foundation**
-- [ ] Implement `lotad/ingestion/http_client.py` — `httpx.AsyncClient` with `hishel` RFC-7234 cache (disk-backed, configurable TTL), base URL config, `User-Agent` header
-- [ ] Implement `tenacity` retry decorator with exponential backoff: initial 1s, multiplier 2, max 30s, max 5 attempts; reraise on 4xx (not retryable)
-- [ ] Implement circuit breaker: `CircuitBreaker` class that counts consecutive failures; after threshold (default 10) sets `is_open = True`; all subsequent calls raise `CircuitBreakerOpen` without hitting the network; resets on successful call or explicit reset
+- [x] Implement `lotad/ingestion/http_client.py` — `httpx.AsyncClient` with `hishel` RFC-7234 cache (disk-backed, configurable TTL), base URL config, `User-Agent` header
+- [x] Implement `tenacity` retry decorator with exponential backoff: initial 1s, multiplier 2, max 30s, max 5 attempts; reraise on 4xx (not retryable)
+- [x] Implement circuit breaker: `CircuitBreaker` class that counts consecutive failures; after threshold (default 10) sets `is_open = True`; all subsequent calls raise `CircuitBreakerOpen` without hitting the network; resets on successful call or explicit reset
 
 **TouhouDB API client (`lotad/ingestion/touhoudb_client.py`)**
-- [ ] `lookup_by_youtube_url(url: str) -> list[SongSearchResult]` — hits `GET /api/songs?query=<url>` or the video URL search endpoint (investigate exact endpoint from VocaDB source)
-- [ ] `get_song(song_id: int) -> SongDetail` — `GET /api/songs/{id}` with full field expansion; Pydantic model for response
-- [ ] `get_album(album_id: int) -> AlbumDetail` — `GET /api/albums/{id}`; includes tracklist
-- [ ] `get_artist(artist_id: int) -> ArtistDetail` — `GET /api/artists/{id}`
-- [ ] `resolve_original_chain(song_id: int) -> list[int]` — recursively follows `originalVersionId` to leaf; cycle detection via visited set; if a node has multiple original links (medley), return all leaves; max depth 10
-- [ ] `get_normalization_count(entity_type: str, entity_id: int) -> int` — returns arrangement count for an original song / artist / circle
-- [ ] Add integration tests (skip if `DATABASE_URL` is SQLite in CI): one happy-path test per method against the live TouhouDB API, skipped with `pytest.mark.skipif`
+- [x] `lookup_by_youtube_url(url: str) -> SongDetail | None` — hits `GET /api/songs/byPv` with pvService + pvId; returns None on 404
+- [x] `get_song(song_id: int) -> SongDetail` — `GET /api/songs/{id}` with full field expansion; Pydantic model for response
+- [x] `get_album(album_id: int) -> AlbumDetail` — `GET /api/albums/{id}`; includes tracklist
+- [x] `get_artist(artist_id: int) -> ArtistDetail` — `GET /api/artists/{id}`
+- [x] `resolve_original_chain(song_id: int) -> list[int]` — recursively follows `originalVersionId` to leaf; cycle detection via visited set; scans penultimate node's notes + webLinks for extra `touhoudb.com/S/<id>` refs to handle medleys; max depth 10
+- [x] `get_normalization_count(entity_type: str, entity_id: int) -> int` — returns arrangement count for an original song / artist / circle
+- [ ] Add integration tests (skip if `DATABASE_URL` is SQLite in CI): one happy-path test per method against the live TouhouDB API, skipped with `pytest.mark.skipif` *(partial — smoke tests exist but full per-method coverage pending)*
 
 **Data mappers**
-- [ ] `map_song_detail_to_db(detail: SongDetail, conn) -> int` — upsert into songs + song_artists + song_languages + song_originals + song_characters; return song_id
-- [ ] `map_album_detail_to_db(detail: AlbumDetail, conn) -> int` — upsert into albums + album_circles + album_events + album_tracks; return album_id
+- [x] `map_song_detail_to_db(detail: SongDetail, conn) -> int` — upsert into songs + song_artists + song_languages + song_originals + song_characters; return song_id
+- [x] `map_album_detail_to_db(detail: AlbumDetail, conn) -> int` — upsert into albums + album_circles + album_events + album_tracks; return album_id
 
 ---
 
-#### Milestone 3 — Core Ingestion Pipeline *(~2 weeks)*
+#### Milestone 3 — Core Ingestion Pipeline *(Complete)*
 
 **YouTube playlist reader**
-- [ ] Implement `lotad/ingestion/youtube_client.py` — `GoogleAPIClient` wrapping `google-api-python-client`; `list_playlist_items(playlist_id: str) -> AsyncIterator[PlaylistItem]` with pagination
-- [ ] Implement `PlaylistItem` Pydantic model: `video_id`, `title`, `description`, `channel_id`, `channel_name`, `duration_seconds`, `position`
-- [ ] Implement progress checkpoint: save last processed `position` + `video_id` to `settings.ingestion_checkpoint_path` after each successful batch of 10; `--resume` flag loads checkpoint on startup
+- [x] Implement `lotad/ingestion/youtube_client.py` — `GoogleAPIClient` wrapping `google-api-python-client`; `list_playlist_items(playlist_id: str) -> AsyncIterator[PlaylistItem]` with pagination
+- [x] Implement `PlaylistItem` Pydantic model: `video_id`, `title`, `description`, `channel_id`, `channel_name`, `duration_seconds`, `position`
+- [x] Implement progress checkpoint: save last processed `position` + `video_id` to `settings.ingestion_checkpoint_path` after each successful batch of 10; `--resume` flag loads checkpoint on startup
 
 **Album detection**
-- [ ] Implement `is_album_video(item: PlaylistItem) -> bool` — heuristic: duration > 20 min OR title contains album indicator patterns (`M3`, `C\d+`, `full album`, etc.)
-- [ ] Implement `extract_timestamps(description: str) -> list[tuple[int, str]]` — regex-parse `MM:SS` / `HH:MM:SS` + track title patterns from YouTube description; return `[(seconds, title), ...]`
+- [x] Implement `is_album_video(item: PlaylistItem) -> bool` — heuristic: duration > 20 min OR title contains album indicator patterns (`M3`, `C\d+`, `full album`, etc.)
+- [x] Implement `extract_timestamps(description: str) -> list[tuple[int, str]]` — regex-parse `MM:SS` / `HH:MM:SS` + track title patterns from YouTube description; return `[(seconds, title), ...]`
 
 **TouhouDB-first ingestion path (covers ~60% of videos)**
-- [ ] `ingest_single_video(item: PlaylistItem, playlist_id: int, conn)` — main dispatch function; calls TouhouDB lookup first; falls back to LLM path (M4) if no match
-- [ ] Upsert `youtube_videos` row on every call regardless of match status
-- [ ] On TouhouDB match: call `map_song_detail_to_db`; create `playlist_songs` row; create `album_tracks` row if album video; handle album video: call `map_album_detail_to_db`, create per-song `album_tracks` rows with timestamps
-- [ ] Deduplication check: before inserting `playlist_songs`, check if `song_id` already exists in any playlist; if so, create `DEDUPLICATE_SONGS` task and continue (do not skip the write — create the row with `source_type` flagged, let task resolution handle cleanup)
-- [ ] Source-flag conflict resolution: if existing row has `source_type = COMPOSITE_VIDEO` and new is `INDIVIDUAL_VIDEO`, overwrite silently (individual video is a more specific match); reverse case surfaces task
+- [x] `ingest_single_video(item: PlaylistItem, playlist_id: int, conn)` — main dispatch function; calls TouhouDB lookup first; falls back to LLM path (M4) if no match
+- [x] Upsert `youtube_videos` row on every call regardless of match status
+- [x] On TouhouDB match: call `map_song_detail_to_db`; create `playlist_songs` row; create `album_tracks` row if album video; handle album video: call `map_album_detail_to_db`, create per-song `album_tracks` rows with timestamps
+- [x] Deduplication check: before inserting `playlist_songs`, check if `song_id` already exists in any playlist; if so, create `DEDUPLICATE_SONGS` task and continue (do not skip the write — create the row with `source_type` flagged, let task resolution handle cleanup)
+- [x] Source-flag conflict resolution: if existing row has `source_type = COMPOSITE_VIDEO` and new is `INDIVIDUAL_VIDEO`, overwrite silently (individual video is a more specific match); reverse case surfaces task
 
 **CLI**
-- [ ] Implement `lotad ingest playlist <youtube-playlist-id>` — invokes pipeline for all videos in playlist; `--resume` flag; `--limit N` for testing
-- [ ] Implement `lotad ingest video <youtube-video-id>` — ingest single video (useful for testing and manual adds)
-- [ ] Rich progress bar via `rich.progress` showing current video title + % complete + ETA
-- [ ] Per-video error isolation: catch and log exceptions per video; do not abort the whole run on a single failure; increment `INGEST_FAILED` task counter and continue
+- [x] Implement `lotad ingest playlist <youtube-playlist-id>` — invokes pipeline for all videos in playlist; `--resume` flag; `--limit N` for testing
+- [x] Implement `lotad ingest video <youtube-video-id>` — ingest single video (useful for testing and manual adds)
+- [x] Rich progress bar via `rich.progress` showing current video title + % complete + ETA
+- [x] Per-video error isolation: catch and log exceptions per video; do not abort the whole run on a single failure; increment `INGEST_FAILED` task counter and continue
 
 **Integration test**
-- [ ] Test `lotad ingest playlist <MEGAMIX_ID> --limit 20` against a real Supabase DB (skipped in CI); verify no crash and ≥1 song row inserted
+- [ ] Test `lotad ingest playlist <MEGAMIX_ID> --limit 20` against a real Supabase DB (skipped in CI); verify no crash and ≥1 song row inserted *(pending)*
 
 ---
 
-#### Milestone 4 — LLM Fallback Path + Task System *(~2 weeks)*
+#### Milestone 4 — LLM Fallback Path + Task System *(Partially Complete)*
 
 **Arrangement Chronicle scraper**
 - [ ] Implement `lotad/agents/arrangement_chronicle.py` — OpenClaw agent that searches `https://touhou.arrangement-chronicle.com/detail_search` for a song by title + circle name extracted from YouTube title/description; returns structured match if found
@@ -687,26 +687,37 @@ Each bullet below corresponds to roughly one implementable unit of work (think: 
 - [ ] TouhouDB fuzzy validation: after LLM extraction, run `touhoudb_client.lookup_by_name(title, circle)` to cross-validate; mismatch → `SUSPICIOUS_METADATA` task; match → upsert with merged data
 
 **Task system**
-- [ ] Create `lotad/tasks/manager.py` — `TaskManager.create(task_type, title, data, related_song_id=None, related_video_id=None)` writes to `tasks` table; idempotent (don't create duplicate OPEN task for same song+type)
-- [ ] Implement `lotad tasks list` — Rich table showing OPEN tasks sorted by priority; columns: id, type, title, created_at, related entity
-- [ ] Implement `lotad tasks show <id>` — full task detail with data payload formatted per task_type
-- [ ] Implement `lotad tasks resolve <id>` — guided interactive prompt per task_type; writes resolution data to DB; sets status = RESOLVED + resolved_at
-- [ ] Implement `lotad tasks dismiss <id>` — sets status = DISMISSED (used for false positives)
-- [ ] Task types with guided resolution prompts: `FILL_MISSING_INFO` (text fields), `DEDUPLICATE_SONGS` (show both rows, choose which to keep), `MISSING_LYRICIST` (text field), `MISSING_CIRCLE` (search or create artist), `REVIEW_CHARACTER_MAPPING` (show original song, select from character list)
+- [x] Create `lotad/tasks/manager.py` — `TaskManager.create(task_type, title, data, related_song_id=None, related_video_id=None)` writes to `tasks` table; idempotent (don't create duplicate OPEN task for same song+type)
+- [x] Implement `lotad tasks list` — Rich table showing OPEN tasks sorted by priority; columns: id, type, title, created_at, related entity
+- [x] Implement `lotad tasks show <id>` — full task detail with data payload formatted per task_type
+- [x] Implement `lotad tasks resolve <id>` — guided interactive prompt per task_type; writes resolution data to DB; sets status = RESOLVED + resolved_at
+- [x] Implement `lotad tasks dismiss <id>` — sets status = DISMISSED (used for false positives)
+- [x] Task types implemented: `FILL_MISSING_INFO`, `DEDUPLICATE_SONGS`, `INGEST_FAILED`, `DROPPED_VIDEO` — with runbook-style resolution prompts. `MISSING_CIRCLE` was removed (most songs belong to a circle; noise outweighed value). `MISSING_LYRICIST` and `REVIEW_CHARACTER_MAPPING` resolution prompts still pending.
 
 **Metadata integrity checks (added to ingest pipeline)**
-- [ ] Duration mismatch check: if YouTube `duration_seconds` vs TouhouDB `duration_seconds` differ by >20%, create `SUSPICIOUS_METADATA` task (do not block the write)
-- [ ] Missing lyricist check: if `has_lyrics = true` and no `LYRICIST` rows in `song_artists`, create `MISSING_LYRICIST` task
-- [ ] Missing circle check: if no `CIRCLE`-type artist linked via `song_artists` + `artist_circles`, create `MISSING_CIRCLE` task
+- [x] Duration mismatch check: if YouTube `duration_seconds` vs TouhouDB `duration_seconds` differ by >20%, create `SUSPICIOUS_METADATA` task (do not block the write)
+- [ ] Missing lyricist check: if `has_lyrics = true` and no `LYRICIST` rows in `song_artists`, create `MISSING_LYRICIST` task *(pending)*
+- [x] ~~Missing circle check~~ — removed; see task types note above
 
 ---
 
-#### Milestone 5 — Characters, Original Songs, and Normalization *(~1 week)*
+#### Milestone 5 — Characters, Original Songs, and Normalization *(In Progress)*
 
 **Character mapper**
+- [x] `lotad originals scrape [--dry-run] [--limit N]` — fetch all Original-type songs by ZUN (artist_id=1) and U2 Akiyama (artist_id=45) from TouhouDB; upsert into `original_songs` with `touhoudb_id`, BPM, notes, stage (from tags); link characters at `confidence=MEDIUM` via `original_song_characters`; resolve open `FILL_MISSING_INFO` tasks; per-song commits with Rich progress bar
+- [x] Schema migrations: 0006 (drop `track_number`/`is_extra_stage` from `original_songs`, move BPM fields there from `songs`), 0007 (add `works.touhoudb_id` for fast-path work matching), 0008 (`original_songs.work_id` nullable — songs from non-Touhou/Seihou works or unused tracks still land in the table)
+- [x] Work matching for original song scrape: fast-path via `works.touhoudb_id`; year+`media_type` filter (prevents cross-type collisions); difflib name-similarity tiebreak (threshold ≥ 0.6); writes back `touhoudb_id` on first heuristic match
+- [x] Seed Seihou games (Shuusou Gyoku `touhoudb_id=28`, Kioh Gyoku `touhoudb_id=136`) and missing books (Bohemian Archive in Japanese Red 2005; Strange and Bright Nature Deity vols 1–3 2008–2009)
+
+**Data quality backfill** *(planned — to be tackled alongside the character mapper below, since both require external sources beyond TouhouDB)*
+
+- [ ] **`original_songs.stage` backfill** — TouhouDB stage tags are only present on ~20–30% of songs; the remainder land with `stage = NULL`. Backfill by scraping Touhou Wiki track listings (`https://en.touhouwiki.net/wiki/<Game>/Music`) which have authoritative stage→track mappings for every game.
+- [ ] **`original_songs.is_boss` backfill** — TouhouDB does not differentiate boss themes from stage themes; `is_boss` is currently always `false`. Backfill from the same Touhou Wiki track listings (boss themes are explicitly labelled).
+- [ ] **`original_song_characters` confidence upgrade** — characters are currently seeded at `confidence=MEDIUM` from TouhouDB's character artist associations, which are sparse and sometimes wrong. Once `is_boss` and `stage` are backfilled, run the full `CharacterMapper` rules (boss rule → `HIGH`, stage rule → `MEDIUM` with task, LLM fallback → `LOW` with task) to replace the TouhouDB-seeded rows with higher-quality assignments and generate `REVIEW_CHARACTER_MAPPING` tasks for ambiguous cases.
+
 - [ ] Implement `lotad/agents/character_mapper.py` — `CharacterMapper.populate_all()` iterates all `original_songs`, maps each to characters via rules + LLM fallback
 - [ ] Boss theme rule: `original_songs.is_boss = true` → look up the character whose `character_works` entry has `appearance_type = BOSS` and `work_id` matches — auto-assign with `confidence = HIGH`
-- [ ] Stage theme rule: stage theme (non-boss, is_extra_stage = false) → look up characters on that stage across all appearances — assign all with `confidence = MEDIUM`; surface `REVIEW_CHARACTER_MAPPING` task
+- [ ] Stage theme rule: stage theme (non-boss, not extra stage) → look up characters on that stage across all appearances — assign all with `confidence = MEDIUM`; surface `REVIEW_CHARACTER_MAPPING` task *(note: `is_extra_stage` column was dropped in migration 0006; extra stage is now encoded as `stage = 7`)*
 - [ ] LLM fallback: for ambiguous or unnamed songs (e.g. staff roll themes, menu music), call Claude API with the song name + game name and a list of characters from that game; assign with `confidence = LOW`; always surface task
 - [ ] Extra-stage and final boss handling: assign both stage theme and boss theme characters when applicable (e.g. Last Remote → Sanae + Koishi)
 - [ ] Hifuu CD tracks: default-assign Maribel + Renko unless name strongly implies a specific character
