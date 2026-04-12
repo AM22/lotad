@@ -577,9 +577,7 @@ class IngestPipeline:
                 tasks.c.status == TaskStatus.OPEN,
             )
         if dedup_filter is not None:
-            existing = conn.execute(
-                sa.select(tasks.c.id).where(dedup_filter)
-            ).one_or_none()
+            existing = conn.execute(sa.select(tasks.c.id).where(dedup_filter)).one_or_none()
             if existing:
                 return
 
@@ -599,9 +597,7 @@ class IngestPipeline:
         try:
             with self._engine.begin() as conn:
                 row = conn.execute(
-                    sa.select(youtube_videos.c.id).where(
-                        youtube_videos.c.video_id == item.video_id
-                    )
+                    sa.select(youtube_videos.c.id).where(youtube_videos.c.video_id == item.video_id)
                 ).one_or_none()
                 yt_video_db_id = row[0] if row else None
                 self._create_task(
