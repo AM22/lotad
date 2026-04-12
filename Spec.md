@@ -669,7 +669,7 @@ Each bullet below corresponds to roughly one implementable unit of work (think: 
 - [x] Per-video error isolation: catch and log exceptions per video; do not abort the whole run on a single failure; increment `INGEST_FAILED` task counter and continue
 
 **Integration test**
-- [ ] Test `lotad ingest playlist <MEGAMIX_ID> --limit 20` against a real Supabase DB (skipped in CI); verify no crash and ≥1 song row inserted *(pending)*
+- [x] Test `lotad ingest playlist <MEGAMIX_ID> --limit 20` against a real Supabase DB (skipped in CI); verify no crash and ≥1 song row inserted
 
 ---
 
@@ -688,15 +688,15 @@ Each bullet below corresponds to roughly one implementable unit of work (think: 
 
 **Task system**
 - [x] Create `lotad/tasks/manager.py` — `TaskManager.create(task_type, title, data, related_song_id=None, related_video_id=None)` writes to `tasks` table; idempotent (don't create duplicate OPEN task for same song+type)
-- [x] Implement `lotad tasks list` — Rich table showing OPEN tasks sorted by priority; columns: id, type, title, created_at, related entity
-- [x] Implement `lotad tasks show <id>` — full task detail with data payload formatted per task_type
-- [x] Implement `lotad tasks resolve <id>` — guided interactive prompt per task_type; writes resolution data to DB; sets status = RESOLVED + resolved_at
-- [x] Implement `lotad tasks dismiss <id>` — sets status = DISMISSED (used for false positives)
-- [x] Task types implemented: `FILL_MISSING_INFO`, `DEDUPLICATE_SONGS`, `INGEST_FAILED`, `DROPPED_VIDEO` — with runbook-style resolution prompts. `MISSING_CIRCLE` was removed (most songs belong to a circle; noise outweighed value). `MISSING_LYRICIST` and `REVIEW_CHARACTER_MAPPING` resolution prompts still pending.
+- [ ] Implement `lotad tasks list` — Rich table showing OPEN tasks sorted by priority; columns: id, type, title, created_at, related entity
+- [ ] Implement `lotad tasks show <id>` — full task detail with data payload formatted per task_type
+- [ ] Implement `lotad tasks resolve <id>` — guided interactive prompt per task_type; writes resolution data to DB; sets status = RESOLVED + resolved_at
+- [ ] Implement `lotad tasks dismiss <id>` — sets status = DISMISSED (used for false positives)
+- [x] Task types implemented: `FILL_MISSING_INFO`, `DEDUPLICATE_SONGS`, `INGEST_FAILED`, `DROPPED_VIDEO` — with runbook-style resolution prompts. `MISSING_CIRCLE` was removed (most songs do not have circle directly on the song object; it is instead tied to the albums model). `MISSING_LYRICIST` and `REVIEW_CHARACTER_MAPPING` resolution prompts still pending.
 
 **Metadata integrity checks (added to ingest pipeline)**
 - [x] Duration mismatch check: if YouTube `duration_seconds` vs TouhouDB `duration_seconds` differ by >20%, create `SUSPICIOUS_METADATA` task (do not block the write)
-- [ ] Missing lyricist check: if `has_lyrics = true` and no `LYRICIST` rows in `song_artists`, create `MISSING_LYRICIST` task *(pending)*
+- [x] Missing lyricist check: if `has_lyrics = true` and no `LYRICIST` rows in `song_artists`, create `MISSING_LYRICIST` task
 - [x] ~~Missing circle check~~ — removed; see task types note above
 
 ---
