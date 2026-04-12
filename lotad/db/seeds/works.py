@@ -482,6 +482,40 @@ BOOKS = [
         "release_year": 2015,
         "notes": "Anthology / artbook series",
     },
+    # Bunbunmaru newspaper compilation with ZUN-composed theme music
+    {
+        "name": "Bohemian Archive in Japanese Red",
+        "short_name": "BAiJR",
+        "media_type": "BOOK",
+        "release_year": 2005,
+        "notes": "Bunbunmaru Shinbun newspaper anthology; includes original ZUN tracks",
+    },
+    # Three Fairies manga (Strange and Bright Nature Deity arc) — TouhouDB stores
+    # the three tankōbon volumes as separate albums.
+    # NOTE: if TouhouDB names these without volume numbers, the difflib matcher
+    # will attribute all volumes to the first (2008) entry. Add touhoudb_ids once
+    # confirmed to switch to the deterministic fast-path.
+    {
+        "name": "Strange and Bright Nature Deity",
+        "short_name": "SaBND",
+        "media_type": "BOOK",
+        "release_year": 2008,
+        "notes": "Three Fairies manga volume 1",
+    },
+    {
+        "name": "Strange and Bright Nature Deity Volume 2",
+        "short_name": "SaBND2",
+        "media_type": "BOOK",
+        "release_year": 2009,
+        "notes": "Three Fairies manga volume 2",
+    },
+    {
+        "name": "Strange and Bright Nature Deity Volume 3",
+        "short_name": "SaBND3",
+        "media_type": "BOOK",
+        "release_year": 2009,
+        "notes": "Three Fairies manga volume 3",
+    },
 ]
 
 
@@ -515,7 +549,7 @@ def seed(engine=None) -> None:
 
     print(
         f"Seeded works: {inserted} new rows, {updated} updated "
-        f"({len(GAMES)} games, {len(SEIHOU_GAMES)} Seihou games, "
+        f"({len(GAMES)} Touhou games, {len(SEIHOU_GAMES)} Seihou games, "
         f"{len(MUSIC_CDS)} music CDs, {len(BOOKS)} books)."
     )
 
