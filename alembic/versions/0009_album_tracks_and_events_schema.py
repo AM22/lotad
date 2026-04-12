@@ -7,16 +7,16 @@ canonical track listing.
 album_events: add touhoudb_id so we can store the TouhouDB event ID returned
 by the album detail API for future extensibility.
 
-Revision ID: 0008
-Revises: 0007
+Revision ID: 0009
+Revises: 0008
 Create Date: 2026-04-11
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0008"
-down_revision = "0007"
+revision = "0009"
+down_revision = "0008"
 branch_labels = None
 depends_on = None
 
