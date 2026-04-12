@@ -46,6 +46,7 @@ ms-playwright/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 
