@@ -132,18 +132,25 @@ def extract_timestamps(description: str) -> list[tuple[int, str]]:
     ``album_tracks.youtube_timestamp_seconds`` is populated for each track,
     enabling per-track playback links.
     """
-    pattern = _re.compile(
-        r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\s+[.\-–—|]?\s*(.+)",
+    # "MM:SS Title" — timestamp at start of chapter line (standard YouTube chapters)
+    forward = _re.compile(r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[ \t]+[.\-–—|]?[ \t]*(.+)")
+    # "Title MM:SS" — timestamp at end of line (common album video format)
+    reverse = _re.compile(
+        r"^(.+?)\s+(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\s*$",
         _re.MULTILINE,
     )
+
+    def _to_seconds(h: str | None, m: str, s: str) -> int:
+        return int(h or 0) * 3600 + int(m) * 60 + int(s)
+
     results: list[tuple[int, str]] = []
-    for m in pattern.finditer(description):
-        hours = int(m.group(1) or 0)
-        minutes = int(m.group(2))
-        seconds_part = int(m.group(3))
-        title = m.group(4).strip()
-        total = hours * 3600 + minutes * 60 + seconds_part
-        results.append((total, title))
+    for m in forward.finditer(description):
+        results.append((_to_seconds(m.group(1), m.group(2), m.group(3)), m.group(4).strip()))
+
+    if not results:
+        for m in reverse.finditer(description):
+            results.append((_to_seconds(m.group(2), m.group(3), m.group(4)), m.group(1).strip()))
+
     return sorted(results)
 
 
@@ -577,8 +584,13 @@ class IngestPipeline:
                 tasks.c.status == TaskStatus.OPEN,
             )
         if dedup_filter is not None:
-            existing = conn.execute(sa.select(tasks.c.id).where(dedup_filter)).one_or_none()
+            existing = conn.execute(sa.select(tasks.c.id).where(dedup_filter)).first()
             if existing:
+                conn.execute(
+                    tasks.update()
+                    .where(tasks.c.id == existing[0])
+                    .values(title=title, data=data)
+                )
                 return
 
         conn.execute(
