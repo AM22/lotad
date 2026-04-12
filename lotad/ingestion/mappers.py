@@ -185,11 +185,14 @@ def _upsert_artist(credit: ArtistForSong | ArtistForAlbum, conn: Connection) -> 
         return None
 
     artist_type = _map_artist_type(artist_summary.artistType)
+    additional = [n.strip() for n in artist_summary.additionalNames.split(",") if n.strip()]
+    name_romanized = additional[0] if additional else None
     stmt = (
         pg_insert(artists)
         .values(
             touhoudb_id=artist_summary.id,
             name=artist_summary.name,
+            name_romanized=name_romanized,
             artist_type=artist_type,
             touhoudb_url=f"https://touhoudb.com/Ar/{artist_summary.id}",
         )
@@ -197,6 +200,7 @@ def _upsert_artist(credit: ArtistForSong | ArtistForAlbum, conn: Connection) -> 
             index_elements=["touhoudb_id"],
             set_={
                 "name": artist_summary.name,
+                "name_romanized": name_romanized,
                 "artist_type": artist_type,
             },
         )
@@ -223,6 +227,8 @@ def map_song_to_db(detail: SongDetail, conn: Connection) -> int:
     song_type = _map_song_type(detail.songType)
     has_lyrics = detail.has_lyrics
     is_orig = detail.is_original_composition
+    additional = [n.strip() for n in detail.additionalNames.split(",") if n.strip()]
+    title_romanized = additional[0] if additional else None
 
     # 1. Upsert the song row
     stmt = (
@@ -230,22 +236,26 @@ def map_song_to_db(detail: SongDetail, conn: Connection) -> int:
         .values(
             touhoudb_id=detail.id,
             title=detail.name,
+            title_romanized=title_romanized,
             duration_seconds=detail.lengthSeconds,
             has_lyrics=has_lyrics,
             is_original_composition=is_orig,
             song_type=song_type,
             publish_date=_parse_publish_date(detail.publishDate),
+            notes=detail.notes,
             touhoudb_url=f"https://touhoudb.com/S/{detail.id}",
         )
         .on_conflict_do_update(
             index_elements=["touhoudb_id"],
             set_={
                 "title": detail.name,
+                "title_romanized": title_romanized,
                 "duration_seconds": detail.lengthSeconds,
                 "has_lyrics": has_lyrics,
                 "is_original_composition": is_orig,
                 "song_type": song_type,
                 "publish_date": _parse_publish_date(detail.publishDate),
+                "notes": detail.notes,
                 "updated_at": sa.func.now(),
             },
         )
@@ -398,12 +408,15 @@ def map_album_to_db(detail: AlbumDetail, conn: Connection) -> int:
     """
     disc_type = _map_disc_type(detail.discType)
     release_date = detail.releaseDate.to_date() if detail.releaseDate else None
+    additional = [n.strip() for n in detail.additionalNames.split(",") if n.strip()]
+    title_romanized = additional[0] if additional else None
 
     stmt = (
         pg_insert(albums)
         .values(
             touhoudb_id=detail.id,
             title=detail.name,
+            title_romanized=title_romanized,
             release_date=release_date,
             catalog_number=detail.catalogNumber,
             barcode=detail.barcode,
@@ -415,6 +428,7 @@ def map_album_to_db(detail: AlbumDetail, conn: Connection) -> int:
             index_elements=["touhoudb_id"],
             set_={
                 "title": detail.name,
+                "title_romanized": title_romanized,
                 "release_date": release_date,
                 "catalog_number": detail.catalogNumber,
                 "barcode": detail.barcode,
