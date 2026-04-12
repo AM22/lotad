@@ -44,11 +44,14 @@ _YOUTUBE_ID_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?v=|shorts/|embed/))([A-Za-z0-9_-]{11})"
 )
 
-# Fields requested from TouhouDB for full song detail
-_SONG_FIELDS = "Artists,Albums,Tags,PVs,AdditionalNames,Notes"
+# Fields requested from TouhouDB for full song detail.
+# Note: additionalNames and notes are returned in the base song response
+# without needing to be listed here — they are NOT valid SongOptionalField
+# values and will cause a 400 if requested explicitly.
+_SONG_FIELDS = "Artists,Albums,Tags,PVs"
 # Extended fields used when resolving original chains — adds WebLinks so we can
 # detect multiple-original references in notes and unofficial link entries.
-_CHAIN_FIELDS = "Artists,Albums,Tags,PVs,WebLinks,AdditionalNames,Notes"
+_CHAIN_FIELDS = "Artists,Albums,Tags,PVs,WebLinks"
 # Fields requested for album detail (includes Tracks)
 _ALBUM_FIELDS = "Artists,Tags,Tracks,AdditionalNames,Description,ReleaseEvent"
 # Fields requested for artist detail
