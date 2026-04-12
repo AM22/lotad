@@ -46,7 +46,12 @@ from lotad.db.models import (
 )
 from lotad.db.session import get_engine
 from lotad.ingestion.http_client import CircuitBreakerOpen
-from lotad.ingestion.mappers import link_album_tracks, link_song_originals, map_album_to_db, map_song_to_db
+from lotad.ingestion.mappers import (
+    link_album_tracks,
+    link_song_originals,
+    map_album_to_db,
+    map_song_to_db,
+)
 from lotad.ingestion.touhoudb_client import TouhouDBClient
 from lotad.ingestion.touhoudb_models import SongDetail
 from lotad.ingestion.youtube_client import PlaylistItem, YouTubeClient
