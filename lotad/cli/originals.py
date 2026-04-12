@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import click
 import sqlalchemy as sa
 from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
 from lotad.config import get_settings
 from lotad.db.models import TaskStatus, TaskType, tasks
@@ -111,21 +112,39 @@ async def _run_scrape(*, dry_run: bool, limit: int | None) -> None:
                 if work_id is None:
                     stats["no_work"] += 1
     else:
-        with engine.begin() as conn:
+        progress = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        )
+        with progress:
+            upsert_task = progress.add_task("Upserting original songs…", total=len(all_songs))
+
+            # Each song is committed in its own transaction so that:
+            # - Supabase's statement timeout cannot kill the entire batch
+            # - Progress is durable as it goes (no all-or-nothing rollback)
             for detail in all_songs:
-                work_id = match_work_for_song(detail.albums, conn)
-                if work_id is None:
-                    stats["no_work"] += 1
+                with engine.begin() as conn:
+                    work_id = match_work_for_song(detail.albums, conn)
+                    if work_id is None:
+                        stats["no_work"] += 1
 
-                original_song_id = upsert_original_song(detail, work_id, conn)
-                stats["upserted"] += 1
+                    original_song_id = upsert_original_song(detail, work_id, conn)
+                    stats["upserted"] += 1
 
-                chars = link_original_song_characters(original_song_id, detail, conn)
-                stats["characters_linked"] += chars
+                    chars = link_original_song_characters(original_song_id, detail, conn)
+                    stats["characters_linked"] += chars
 
-            # Resolve FILL_MISSING_INFO tasks now that original_songs has touhoudb_ids
+                progress.advance(upsert_task)
+
+        # Task resolution runs in a single separate transaction after all songs
+        # are committed — link_song_originals needs the rows to be visible.
+        console.print("Resolving FILL_MISSING_INFO tasks…")
+        with engine.begin() as conn:
             resolved = _resolve_original_song_chain_tasks(conn)
-            stats["tasks_resolved"] = resolved
+        stats["tasks_resolved"] = resolved
 
     _print_summary(stats, dry_run=dry_run)
 
