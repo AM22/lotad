@@ -428,10 +428,6 @@ class TouhouDBClient:
         - ``artistParticipationStatus=Everything``: required alongside artistId
           for the filter to be applied correctly by the TouhouDB backend.
 
-        (``childVoicebanks`` is not a real parameter on this endpoint and is
-        silently ignored — confirmed by comparing against TouhouDB's own web
-        search request for the same query.)
-
         Args:
             artist_id: TouhouDB artist ID (e.g. 1 for ZUN, 45 for U2 Akiyama).
             song_type: TouhouDB song type filter (default "Original").
