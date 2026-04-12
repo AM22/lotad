@@ -491,6 +491,7 @@ album_events = sa.Table(
     metadata,
     sa.Column("album_id", sa.Integer, sa.ForeignKey("albums.id"), nullable=False),
     sa.Column("event_name", sa.Text, nullable=False),
+    sa.Column("touhoudb_id", sa.Integer, nullable=True),
     sa.PrimaryKeyConstraint("album_id", "event_name"),
 )
 
@@ -502,13 +503,6 @@ album_tracks = sa.Table(
     sa.Column("song_id", sa.Integer, sa.ForeignKey("songs.id"), nullable=False),
     sa.Column("track_number", sa.Integer, nullable=False),
     sa.Column("disc_number", sa.Integer, nullable=False, server_default="1"),
-    sa.Column(
-        "youtube_video_id",
-        sa.Integer,
-        sa.ForeignKey("youtube_videos.id"),
-        nullable=True,
-    ),
-    sa.Column("youtube_timestamp_seconds", sa.Integer, nullable=True),
     sa.UniqueConstraint("album_id", "disc_number", "track_number"),
 )
 

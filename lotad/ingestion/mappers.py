@@ -36,7 +36,9 @@ from lotad.db.models import (
     SongRole,
     SongType,
     album_circles,
+    album_events,
     album_tags,
+    album_tracks,
     albums,
     artists,
     characters,
@@ -441,8 +443,51 @@ def map_album_to_db(detail: AlbumDetail, conn: Connection) -> int:
             )
         )
 
+    # Upsert release events
+    if detail.originalRelease:
+        for event in detail.originalRelease.releaseEvents:
+            conn.execute(
+                pg_insert(album_events)
+                .values(album_id=album_id, event_name=event.name, touhoudb_id=event.id)
+                .on_conflict_do_nothing()
+            )
+
     logger.debug("Upserted album id=%d touhoudb_id=%d %r", album_id, detail.id, detail.name)
     return album_id
+
+
+def link_album_tracks(album_id: int, detail: AlbumDetail, conn: Connection) -> int:
+    """
+    Link tracks of an album to songs already in the DB.
+
+    For each track in ``AlbumDetail.tracks`` whose song already has a row in
+    ``songs`` (keyed on ``touhoudb_id``), inserts an ``album_tracks`` row.
+    Tracks whose songs haven't been ingested yet are silently skipped —
+    they will be linked when those songs are ingested later.
+
+    Returns the number of tracks linked.
+    """
+    linked = 0
+    for track in detail.tracks:
+        if track.song is None or track.trackNumber is None:
+            continue
+        row = conn.execute(
+            sa.select(songs.c.id).where(songs.c.touhoudb_id == track.song.id)
+        ).one_or_none()
+        if row is None:
+            continue
+        conn.execute(
+            pg_insert(album_tracks)
+            .values(
+                album_id=album_id,
+                song_id=row.id,
+                track_number=track.trackNumber,
+                disc_number=track.discNumber,
+            )
+            .on_conflict_do_nothing()
+        )
+        linked += 1
+    return linked
 
 
 def _upsert_album_circles(

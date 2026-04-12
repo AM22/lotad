@@ -206,6 +206,17 @@ class AlbumTrack(_Base):
     song: SongSummary | None = None
 
 
+class ReleaseEvent(_Base):
+    id: int
+    name: str
+    urlSlug: str = ""
+    category: str = ""
+
+
+class OriginalRelease(_Base):
+    releaseEvents: list[ReleaseEvent] = Field(default_factory=list)
+
+
 class AlbumDetail(_Base):
     """Full album detail returned by GET /api/albums/{id}."""
 
@@ -221,6 +232,7 @@ class AlbumDetail(_Base):
     artists: list[ArtistForAlbum] = Field(default_factory=list)
     tags: list[TagVote] = Field(default_factory=list)
     tracks: list[AlbumTrack] = Field(default_factory=list)
+    originalRelease: OriginalRelease | None = None
 
 
 # ---------------------------------------------------------------------------
