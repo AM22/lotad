@@ -1,7 +1,12 @@
 """Seed the works table with canonical Touhou games, ZUN music CDs, and books.
 
+Also includes Seihou (ZUN Soft) games which ZUN composed music for — these
+are not Touhou games but ZUN is credited as composer, so their songs appear
+in TouhouDB and arrangements of them can appear in user playlists.
+
 Sources:
   - https://en.touhouwiki.net/wiki/Touhou_Project
+  - https://en.touhouwiki.net/wiki/Seihou_Project
   - https://touhoudb.com (verify TouhouDB model alignment during M2)
 
 Run via: lotad db seed-works
@@ -359,6 +364,32 @@ MUSIC_CDS = [
 # canonical_order is null — these are not part of the game number sequence
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Seihou (ZUN Soft) games — not Touhou, but ZUN composed their soundtracks.
+# canonical_order is null — these are outside the Touhou numbering system.
+# touhoudb_id stores the TouhouDB album ID for deterministic work matching.
+# ---------------------------------------------------------------------------
+
+SEIHOU_GAMES = [
+    {
+        "name": "Shuusou Gyoku",
+        "short_name": "SG",
+        "media_type": "GAME",
+        "release_year": 2000,
+        "touhoudb_id": 28,  # https://touhoudb.com/Al/28
+        "notes": "Seihou #1; co-developed with Twilight Frontier",
+    },
+    {
+        "name": "Kioh Gyoku",
+        "short_name": "KG",
+        "media_type": "GAME",
+        "release_year": 2001,
+        "touhoudb_id": 136,  # https://touhoudb.com/Al/136
+        "notes": "Seihou #2; co-developed with Twilight Frontier",
+    },
+]
+
+
 BOOKS = [
     {
         "name": "Curiosities of Lotus Asia",
@@ -458,24 +489,34 @@ def seed(engine=None) -> None:
     if engine is None:
         engine = get_engine()
 
-    all_works = GAMES + MUSIC_CDS + BOOKS
+    all_works = GAMES + SEIHOU_GAMES + MUSIC_CDS + BOOKS
     inserted = 0
+    updated = 0
 
     with engine.begin() as conn:
         for row in all_works:
             # Idempotent: skip if already present (match on name + media_type)
-            exists = conn.execute(
-                select(works.c.id).where(
+            existing = conn.execute(
+                select(works.c.id, works.c.touhoudb_id).where(
                     (works.c.name == row["name"]) & (works.c.media_type == row["media_type"])
                 )
             ).first()
-            if not exists:
+            if not existing:
                 conn.execute(insert(works).values(**row))
                 inserted += 1
+            elif "touhoudb_id" in row and existing.touhoudb_id is None:
+                # Back-fill touhoudb_id if the row exists but lacks it
+                conn.execute(
+                    works.update()
+                    .where(works.c.id == existing.id)
+                    .values(touhoudb_id=row["touhoudb_id"])
+                )
+                updated += 1
 
     print(
-        f"Seeded works: {inserted} new rows "
-        f"({len(GAMES)} games, {len(MUSIC_CDS)} music CDs, {len(BOOKS)} books)."
+        f"Seeded works: {inserted} new rows, {updated} updated "
+        f"({len(GAMES)} games, {len(SEIHOU_GAMES)} Seihou games, "
+        f"{len(MUSIC_CDS)} music CDs, {len(BOOKS)} books)."
     )
 
 

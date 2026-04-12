@@ -220,7 +220,7 @@ original_songs = sa.Table(
     sa.Column("touhoudb_id", sa.Integer, nullable=True, unique=True),
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("name_romanized", sa.Text, nullable=True),
-    sa.Column("work_id", sa.Integer, sa.ForeignKey("works.id"), nullable=False),
+    sa.Column("work_id", sa.Integer, sa.ForeignKey("works.id"), nullable=True),
     # Stage encoding: NULL=unknown, 0=title theme, 1-6=stage N, 7=extra stage,
     # 8=ending theme, 9=staff roll / credits
     sa.Column("stage", sa.Integer, nullable=True),
