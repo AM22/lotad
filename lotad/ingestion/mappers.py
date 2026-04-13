@@ -859,6 +859,8 @@ def ingest_song_from_llm_classification(
     playlist_db_id: int,
     yt_video_id: int,
     conn: Connection,
+    *,
+    duration_seconds: int | None = None,
 ) -> int:
     """
     Insert a minimal song record from LLM-extracted classification data.
@@ -910,7 +912,7 @@ def ingest_song_from_llm_classification(
             touhoudb_id=None,
             title=title,
             title_romanized=None,
-            duration_seconds=None,
+            duration_seconds=duration_seconds,
             has_lyrics=has_lyrics,
             is_original_composition=is_orig,
             song_type=song_type,
@@ -921,22 +923,22 @@ def ingest_song_from_llm_classification(
     logger.info("Inserted LLM stub song id=%d title=%r is_orig=%s", song_id, title, is_orig)
 
     def _upsert_stub_artist(name: str, artist_type: ArtistType, role: SongRole) -> None:
-        stmt = (
-            pg_insert(artists)
-            .values(name=name, artist_type=artist_type, touhoudb_id=None)
-            .on_conflict_do_nothing()
-            .returning(artists.c.id)
-        )
-        row = conn.execute(stmt).one_or_none()
-        if row is None:
-            row = conn.execute(
-                sa.select(artists.c.id).where(artists.c.name == name)
-            ).one_or_none()
-        if row is None:
-            return
+        # artists.name has no unique constraint (touhoudb_id does), so we must
+        # check for an existing row by name first to avoid creating duplicates.
+        existing = conn.execute(
+            sa.select(artists.c.id).where(artists.c.name == name).limit(1)
+        ).one_or_none()
+        if existing is not None:
+            artist_id = existing[0]
+        else:
+            artist_id = conn.execute(
+                pg_insert(artists)
+                .values(name=name, artist_type=artist_type, touhoudb_id=None)
+                .returning(artists.c.id)
+            ).scalar_one()
         conn.execute(
             pg_insert(song_artists)
-            .values(song_id=song_id, artist_id=row[0], role=role)
+            .values(song_id=song_id, artist_id=artist_id, role=role)
             .on_conflict_do_nothing()
         )
 
@@ -959,9 +961,7 @@ def ingest_song_from_llm_classification(
     # Japanese name) still connect when possible.
     for orig_name in original_song_names:
         orig_row = conn.execute(
-            sa.select(original_songs.c.id).where(
-                original_songs.c.name.ilike(orig_name)
-            )
+            sa.select(original_songs.c.id).where(original_songs.c.name.ilike(orig_name))
         ).one_or_none()
         if orig_row is None:
             # Try substring match in both directions

@@ -71,15 +71,21 @@ def get_task_with_context(conn: Connection, task_id: int) -> dict[str, Any] | No
 
     song_row = None
     if task_row["related_song_id"] is not None:
-        song_row = conn.execute(
-            sa.select(songs).where(songs.c.id == task_row["related_song_id"])
-        ).mappings().one_or_none()
+        song_row = (
+            conn.execute(sa.select(songs).where(songs.c.id == task_row["related_song_id"]))
+            .mappings()
+            .one_or_none()
+        )
 
     video_row = None
     if task_row["related_video_id"] is not None:
-        video_row = conn.execute(
-            sa.select(youtube_videos).where(youtube_videos.c.id == task_row["related_video_id"])
-        ).mappings().one_or_none()
+        video_row = (
+            conn.execute(
+                sa.select(youtube_videos).where(youtube_videos.c.id == task_row["related_video_id"])
+            )
+            .mappings()
+            .one_or_none()
+        )
 
     artist_rows: list[Any] = []
     if task_row["related_song_id"] is not None:
@@ -337,6 +343,8 @@ def resolve_missing_lyricist(
                 .values(song_id=song_id, artist_id=artist_id, role=SongRole.LYRICIST)
                 .on_conflict_do_nothing()
             )
-            merge_task_data(conn, task_id, {"added_lyricist": lyricist_name, "artist_id": artist_id})
+            merge_task_data(
+                conn, task_id, {"added_lyricist": lyricist_name, "artist_id": artist_id}
+            )
 
     update_task_status(conn, task_id, TaskStatus.RESOLVED)

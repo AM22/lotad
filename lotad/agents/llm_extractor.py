@@ -438,7 +438,11 @@ class LLMExtractor:
         Call Claude to classify the video and extract structured search terms.
         Uses tool-use (forced) for reliable structured output.
         """
-        dur_str = f"{duration_seconds // 60}:{duration_seconds % 60:02d}" if duration_seconds else "unknown"
+        dur_str = (
+            f"{duration_seconds // 60}:{duration_seconds % 60:02d}"
+            if duration_seconds
+            else "unknown"
+        )
         user_message = (
             f"YouTube title: {title}\n"
             f"Channel: {channel_name or 'unknown'}\n"
@@ -609,9 +613,7 @@ class LLMExtractor:
                 # retry without filter
                 songs = await self._tdb.search_songs(query)
         elif classification.circle_name:
-            songs = await self._tdb.search_songs(
-                query, artist_name=classification.circle_name
-            )
+            songs = await self._tdb.search_songs(query, artist_name=classification.circle_name)
             # Fallback: if artist_name filter returned nothing, try without
             if not songs:
                 songs = await self._tdb.search_songs(query)
@@ -651,15 +653,11 @@ class LLMExtractor:
             return await self._match_single_song(classification, video_duration, artist_id)
 
         if artist_id is not None:
-            albums: list[AlbumDetail] = await self._tdb.search_albums(
-                query, artist_id=artist_id
-            )
+            albums: list[AlbumDetail] = await self._tdb.search_albums(query, artist_id=artist_id)
             if not albums:
                 albums = await self._tdb.search_albums(query)
         elif classification.circle_name:
-            albums = await self._tdb.search_albums(
-                query, artist_name=classification.circle_name
-            )
+            albums = await self._tdb.search_albums(query, artist_name=classification.circle_name)
             if not albums:
                 albums = await self._tdb.search_albums(query)
         else:
@@ -685,11 +683,7 @@ class LLMExtractor:
         score = _album_name_score(best_album)
         confidence = _confidence_from_score(score)
 
-        track_ids = [
-            t.song.id
-            for t in best_album.tracks
-            if t.song is not None
-        ]
+        track_ids = [t.song.id for t in best_album.tracks if t.song is not None]
 
         best_candidate = CandidateMatch(
             touhoudb_id=best_album.id,
@@ -734,7 +728,9 @@ class LLMExtractor:
         # Overall confidence = minimum across tracks
         all_confs = [r.confidence for r in track_results]
         conf_order = [ConfidenceLevel.HIGH, ConfidenceLevel.MEDIUM, ConfidenceLevel.LOW]
-        overall_conf = min(all_confs, key=lambda c: conf_order.index(c)) if all_confs else ConfidenceLevel.LOW
+        overall_conf = (
+            min(all_confs, key=lambda c: conf_order.index(c)) if all_confs else ConfidenceLevel.LOW
+        )
 
         return MatchResult(
             video_type=VideoType.COMPOSITE_TRACKS,

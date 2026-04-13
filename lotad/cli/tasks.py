@@ -309,7 +309,11 @@ def tasks_show(task_id: int) -> None:
                 val = cls_data.get(field)
                 if val:
                     display = ", ".join(val) if isinstance(val, list) else val
-                    lines.append(f"  {label:<12}: {display!r}" if field == "extraction_notes" else f"  {label:<12}: {display}")
+                    lines.append(
+                        f"  {label:<12}: {display!r}"
+                        if field == "extraction_notes"
+                        else f"  {label:<12}: {display}"
+                    )
             lines.append(f"  → Run [cyan]lotad tasks resolve {task_id}[/cyan] to insert stub")
         else:
             lines.append(
@@ -324,7 +328,9 @@ def tasks_show(task_id: int) -> None:
         if tdb_dur and yt_dur:
             diff_pct = (yt_dur - tdb_dur) / tdb_dur * 100
             sign = "+" if diff_pct >= 0 else ""
-            lines.append(f"  YouTube   : {_fmt_duration(yt_dur)} ({yt_dur}s)  ← {sign}{diff_pct:.1f}%")
+            lines.append(
+                f"  YouTube   : {_fmt_duration(yt_dur)} ({yt_dur}s)  ← {sign}{diff_pct:.1f}%"
+            )
         else:
             lines.append(f"  YouTube   : {_fmt_duration(yt_dur)} ({yt_dur}s)")
         lines.append("")
@@ -341,7 +347,9 @@ def tasks_show(task_id: int) -> None:
 
     elif tt == TaskType.DROPPED_VIDEO:
         lines.append("[bold underline]Data[/bold underline]")
-        lines.append(f"  position  : {data.get('position', '?')} in playlist {data.get('playlist_db_id', '?')}")
+        lines.append(
+            f"  position  : {data.get('position', '?')} in playlist {data.get('playlist_db_id', '?')}"
+        )
         lines.append(f"  note      : {data.get('note', '?')}")
         lines.append("")
 
@@ -476,7 +484,9 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
 
     console.print(f"\n[bold]Resolving INGEST_FAILED #{task_id}[/bold]")
     if video:
-        console.print(f"Video: {video.get('title', '?')!r}  ({_fmt_duration(video.get('duration_seconds'))})")
+        console.print(
+            f"Video: {video.get('title', '?')!r}  ({_fmt_duration(video.get('duration_seconds'))})"
+        )
     console.print()
 
     llm_match = data.get("llm_match")
@@ -568,8 +578,7 @@ async def _do_ingest_single(task_id: int, data: dict, video_row: Any, touhoudb_i
     playlist_db_id = data.get("playlist_db_id")
     if playlist_db_id is None:
         console.print(
-            "[red]Error: task data missing playlist_db_id. "
-            "Cannot re-ingest automatically.[/red]"
+            "[red]Error: task data missing playlist_db_id. Cannot re-ingest automatically.[/red]"
         )
         return
 
@@ -698,7 +707,11 @@ async def _do_ingest_stub(task_id: int, data: dict, video_row: Any, llm_cls: dic
             return
 
         song_id = ingest_song_from_llm_classification(
-            classification, playlist_db_id, yt_db_id, conn
+            classification,
+            playlist_db_id,
+            yt_db_id,
+            conn,
+            duration_seconds=video_row.get("duration_seconds"),
         )
         manager.resolve_ingest_failed(conn, task_id, song_id=song_id)
 
@@ -777,11 +790,15 @@ def _resolve_deduplicate_songs(task_id: int, ctx: dict) -> None:
     console.print()
 
     if ex_src == "INDIVIDUAL_VIDEO" and new_src == "COMPOSITE_VIDEO":
-        console.print("[1] Keep Playlist A / Individual  (recommended — individual takes precedence)")
+        console.print(
+            "[1] Keep Playlist A / Individual  (recommended — individual takes precedence)"
+        )
         console.print("[2] Keep Playlist B / Composite")
     elif ex_src == "COMPOSITE_VIDEO" and new_src == "INDIVIDUAL_VIDEO":
         console.print("[1] Keep Playlist A / Composite")
-        console.print("[2] Keep Playlist B / Individual  (recommended — individual takes precedence)")
+        console.print(
+            "[2] Keep Playlist B / Individual  (recommended — individual takes precedence)"
+        )
     else:
         console.print(f"[1] Keep Playlist A (id={ex_pl})")
         console.print(f"[2] Keep Playlist B (id={new_pl})")
@@ -808,7 +825,9 @@ def _resolve_deduplicate_songs(task_id: int, ctx: dict) -> None:
             manager.resolve_deduplicate_songs(
                 conn, task_id, remove_playlist_id=remove_id, song_id=song_id
             )
-        console.print(f"[green]Removed from playlist {remove_id}. Task #{task_id} resolved.[/green]")
+        console.print(
+            f"[green]Removed from playlist {remove_id}. Task #{task_id} resolved.[/green]"
+        )
 
 
 def _resolve_missing_lyricist(task_id: int, ctx: dict) -> None:
@@ -837,9 +856,7 @@ def _resolve_missing_lyricist(task_id: int, ctx: dict) -> None:
     elif choice == "2":
         if click.confirm("Mark lyricist as intentionally unknown?", default=True):
             with get_engine().begin() as conn:
-                manager.resolve_missing_lyricist(
-                    conn, task_id, lyricist_name=None, song_id=song_id
-                )
+                manager.resolve_missing_lyricist(conn, task_id, lyricist_name=None, song_id=song_id)
             console.print(f"[green]Task #{task_id} resolved (no lyricist).[/green]")
     elif choice == "D":
         with get_engine().begin() as conn:
@@ -974,9 +991,7 @@ def tasks_enrich(task_id: int | None, enrich_all: bool, dry_run: bool, limit: in
     if not task_id and not enrich_all:
         console.print("[yellow]Specify --id ID or --all.[/yellow]")
         raise click.Abort()
-    asyncio.run(
-        _run_enrich(task_id=task_id, enrich_all=enrich_all, dry_run=dry_run, limit=limit)
-    )
+    asyncio.run(_run_enrich(task_id=task_id, enrich_all=enrich_all, dry_run=dry_run, limit=limit))
 
 
 async def _run_enrich(
@@ -1034,11 +1049,13 @@ async def _run_enrich(
             with engine.connect() as conn:
                 video_row = None
                 if task_row["related_video_id"] is not None:
-                    video_row = conn.execute(
-                        sa.select(yt_table).where(
-                            yt_table.c.id == task_row["related_video_id"]
+                    video_row = (
+                        conn.execute(
+                            sa.select(yt_table).where(yt_table.c.id == task_row["related_video_id"])
                         )
-                    ).mappings().one_or_none()
+                        .mappings()
+                        .one_or_none()
+                    )
 
             if video_row is None:
                 console.print(
@@ -1068,9 +1085,7 @@ async def _run_enrich(
                         conn=match_conn,
                     )
             except Exception as exc:
-                console.print(
-                    f"[{i}/{total}] #{tid}  {short_title!r}  — [red]error: {exc}[/red]"
-                )
+                console.print(f"[{i}/{total}] #{tid}  {short_title!r}  — [red]error: {exc}[/red]")
                 continue
 
             conf = result.confidence
@@ -1143,6 +1158,4 @@ async def _run_enrich(
             f"[red]{unmatched} unmatched[/red]"
         )
         if awaiting_review > 0:
-            console.print(
-                "  Run [cyan]lotad tasks list --type INGEST_FAILED[/cyan] to review."
-            )
+            console.print("  Run [cyan]lotad tasks list --type INGEST_FAILED[/cyan] to review.")
