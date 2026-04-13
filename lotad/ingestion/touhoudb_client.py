@@ -518,6 +518,71 @@ class TouhouDBClient:
         )
         return all_songs
 
+    async def search_songs(
+        self,
+        query: str,
+        *,
+        artist_name: str | None = None,
+        max_results: int = 10,
+    ) -> list[SongDetail]:
+        """
+        Text search for songs by title.
+
+        Uses ``GET /api/songs`` with ``nameMatchMode=Words`` so individual
+        words in *query* are matched independently (not as a phrase).  Returns
+        full ``SongDetail`` objects with Artists, Albums, Tags, and PVs.
+
+        *artist_name* is passed as the ``artistName`` text filter supported by
+        TouhouDB's VocaDB-based API.  If the parameter is not supported by the
+        live instance, callers should fall back to a query-only search.
+        """
+        params: dict[str, Any] = {
+            "query": query,
+            "nameMatchMode": "Words",
+            "fields": _SONG_FIELDS,
+            "lang": "Default",
+            "maxResults": max_results,
+            "getTotalCount": "false",
+            "sort": "SongInAlbum",
+        }
+        if artist_name:
+            params["artistName"] = artist_name
+            params["artistParticipationStatus"] = "Everything"
+
+        data = await self._get("/songs", **params)
+        page = SongDetailList.model_validate(data)
+        return page.items
+
+    async def search_albums(
+        self,
+        query: str,
+        *,
+        artist_name: str | None = None,
+        max_results: int = 5,
+    ) -> list[AlbumDetail]:
+        """
+        Text search for albums by title.
+
+        Uses ``GET /api/albums`` with ``nameMatchMode=Words``.  Returns full
+        ``AlbumDetail`` objects including Tracks so the caller can iterate
+        track TouhouDB IDs for composite ingestion.
+        """
+        params: dict[str, Any] = {
+            "query": query,
+            "nameMatchMode": "Words",
+            "fields": _ALBUM_FIELDS,
+            "lang": "Default",
+            "maxResults": max_results,
+            "getTotalCount": "false",
+        }
+        if artist_name:
+            params["artistName"] = artist_name
+
+        data = await self._get("/albums", **params)
+        # /api/albums returns the same paginated wrapper shape as /api/songs
+        items_raw = data.get("items", []) if isinstance(data, dict) else []
+        return [AlbumDetail.model_validate(item) for item in items_raw]
+
     async def get_normalization_count(
         self,
         entity_type: str,

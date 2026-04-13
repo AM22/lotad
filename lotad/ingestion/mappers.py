@@ -35,6 +35,7 @@ from lotad.db.models import (
     MediaType,
     SongRole,
     SongType,
+    SourceType,
     album_circles,
     album_events,
     album_tags,
@@ -44,6 +45,7 @@ from lotad.db.models import (
     characters,
     original_song_characters,
     original_songs,
+    playlist_songs,
     song_artists,
     song_characters,
     song_tags,
@@ -844,3 +846,101 @@ def link_original_song_characters(
         linked += 1
 
     return linked
+
+
+# ---------------------------------------------------------------------------
+# LLM-sourced stub insertion
+# ---------------------------------------------------------------------------
+
+
+def ingest_song_from_llm_classification(
+    classification: Any,
+    playlist_db_id: int,
+    yt_video_id: int,
+    conn: Connection,
+) -> int:
+    """
+    Insert a minimal song record from LLM-extracted classification data.
+
+    Used when the LLM could not find a TouhouDB match but extracted enough
+    metadata to create a usable stub entry.  Inserted rows are identifiable
+    by ``songs.touhoudb_id IS NULL``.
+
+    Creates:
+      - ``songs`` row (no touhoudb_id)
+      - ``artists`` rows for circle and individual arrangers/vocalists (no touhoudb_id)
+      - ``song_artists`` rows for CIRCLE, ARRANGER, VOCALIST roles
+      - ``playlist_songs`` entry with INDIVIDUAL_VIDEO source
+
+    Does NOT create: album linkage, original songs, song_languages, tags.
+    These can be backfilled once/if the song appears on TouhouDB.
+
+    Returns the internal ``songs.id``.
+    """
+    # Import here to avoid circular at module load time
+    from lotad.agents.llm_extractor import VideoClassification  # noqa: F401
+
+    title = getattr(classification, "song_title", None) or "Unknown"
+    has_lyrics = bool(getattr(classification, "vocalist_names", None))
+
+    song_stmt = (
+        pg_insert(songs)
+        .values(
+            touhoudb_id=None,
+            title=title,
+            title_romanized=None,
+            duration_seconds=None,
+            has_lyrics=has_lyrics,
+            is_original_composition=False,
+            song_type=SongType.ARRANGEMENT,
+        )
+        .returning(songs.c.id)
+    )
+    song_id: int = conn.execute(song_stmt).scalar_one()
+    logger.info("Inserted LLM stub song id=%d title=%r", song_id, title)
+
+    def _upsert_stub_artist(name: str, artist_type: ArtistType, role: SongRole) -> None:
+        stmt = (
+            pg_insert(artists)
+            .values(name=name, artist_type=artist_type, touhoudb_id=None)
+            .on_conflict_do_nothing()
+            .returning(artists.c.id)
+        )
+        row = conn.execute(stmt).one_or_none()
+        if row is None:
+            row = conn.execute(
+                sa.select(artists.c.id).where(artists.c.name == name)
+            ).one_or_none()
+        if row is None:
+            return
+        conn.execute(
+            pg_insert(song_artists)
+            .values(song_id=song_id, artist_id=row[0], role=role)
+            .on_conflict_do_nothing()
+        )
+
+    circle_name = getattr(classification, "circle_name", None)
+    if circle_name:
+        _upsert_stub_artist(circle_name, ArtistType.CIRCLE, SongRole.ARRANGER)
+
+    for name in getattr(classification, "arranger_names", []) or []:
+        _upsert_stub_artist(name, ArtistType.INDIVIDUAL, SongRole.ARRANGER)
+
+    for name in getattr(classification, "vocalist_names", []) or []:
+        _upsert_stub_artist(name, ArtistType.VOCALIST, SongRole.VOCALIST)
+
+    for name in getattr(classification, "lyricist_names", []) or []:
+        _upsert_stub_artist(name, ArtistType.INDIVIDUAL, SongRole.LYRICIST)
+
+    conn.execute(
+        pg_insert(playlist_songs)
+        .values(
+            song_id=song_id,
+            playlist_id=playlist_db_id,
+            youtube_video_id=yt_video_id,
+            source_type=SourceType.INDIVIDUAL_VIDEO,
+        )
+        .on_conflict_do_nothing()
+    )
+
+    return song_id
