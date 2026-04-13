@@ -20,12 +20,12 @@ def upgrade() -> None:
     # Delete duplicate OPEN tasks linked to a video, keeping the oldest (lowest id)
     op.execute("""
         DELETE FROM tasks
-        WHERE status = 'open'
+        WHERE status = 'OPEN'::task_status
           AND related_video_id IS NOT NULL
           AND id NOT IN (
               SELECT MIN(id)
               FROM tasks
-              WHERE status = 'open'
+              WHERE status = 'OPEN'::task_status
                 AND related_video_id IS NOT NULL
               GROUP BY task_type, related_video_id
           )
@@ -34,12 +34,12 @@ def upgrade() -> None:
     # Delete duplicate OPEN tasks linked to a song, keeping the oldest (lowest id)
     op.execute("""
         DELETE FROM tasks
-        WHERE status = 'open'
+        WHERE status = 'OPEN'::task_status
           AND related_song_id IS NOT NULL
           AND id NOT IN (
               SELECT MIN(id)
               FROM tasks
-              WHERE status = 'open'
+              WHERE status = 'OPEN'::task_status
                 AND related_song_id IS NOT NULL
               GROUP BY task_type, related_song_id
           )
@@ -51,7 +51,7 @@ def upgrade() -> None:
         "tasks",
         ["task_type", "related_video_id"],
         unique=True,
-        postgresql_where="status = 'open' AND related_video_id IS NOT NULL",
+        postgresql_where="status = 'OPEN'::task_status AND related_video_id IS NOT NULL",
     )
 
     # Partial unique index: one OPEN task per (task_type, related_song_id)
@@ -60,7 +60,7 @@ def upgrade() -> None:
         "tasks",
         ["task_type", "related_song_id"],
         unique=True,
-        postgresql_where="status = 'open' AND related_song_id IS NOT NULL",
+        postgresql_where="status = 'OPEN'::task_status AND related_song_id IS NOT NULL",
     )
 
 
