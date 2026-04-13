@@ -524,6 +524,108 @@ class TouhouDBClient:
         )
         return all_songs
 
+    async def search_artists(
+        self,
+        query: str,
+        *,
+        max_results: int = 5,
+    ) -> list[ArtistDetail]:
+        """
+        Text search for artists/circles by name.
+
+        Uses ``GET /api/artists`` with ``nameMatchMode=Words``.
+        Returns enough detail to identify the TouhouDB artist ID for use
+        as a filter in ``search_songs`` / ``search_albums``.
+        """
+        from lotad.ingestion.touhoudb_models import ArtistDetailList
+
+        params: dict[str, Any] = {
+            "query": query,
+            "nameMatchMode": "Words",
+            "fields": _ARTIST_FIELDS,
+            "lang": "Default",
+            "maxResults": max_results,
+            "getTotalCount": "false",
+        }
+        data = await self._get("/artists", **params)
+        page = ArtistDetailList.model_validate(data)
+        return page.items
+
+    async def search_songs(
+        self,
+        query: str,
+        *,
+        artist_id: int | None = None,
+        artist_name: str | None = None,
+        max_results: int = 10,
+    ) -> list[SongDetail]:
+        """
+        Text search for songs by title.
+
+        Uses ``GET /api/songs`` with ``nameMatchMode=Words`` so individual
+        words in *query* are matched independently (not as a phrase).  Returns
+        full ``SongDetail`` objects with Artists, Albums, Tags, and PVs.
+
+        Filtering priority:
+          1. *artist_id* — exact TouhouDB artist ID (most precise, preferred).
+          2. *artist_name* — text filter; less precise, kept as fallback.
+        Pass at most one; if both provided *artist_id* takes precedence.
+        """
+        params: dict[str, Any] = {
+            "query": query,
+            "nameMatchMode": "Words",
+            "fields": _SONG_FIELDS,
+            "lang": "Default",
+            "maxResults": max_results,
+            "getTotalCount": "false",
+            "sort": "SongInAlbum",
+        }
+        if artist_id is not None:
+            params["artistId"] = artist_id
+            params["artistParticipationStatus"] = "Everything"
+        elif artist_name:
+            params["artistName"] = artist_name
+            params["artistParticipationStatus"] = "Everything"
+
+        data = await self._get("/songs", **params)
+        page = SongDetailList.model_validate(data)
+        return page.items
+
+    async def search_albums(
+        self,
+        query: str,
+        *,
+        artist_id: int | None = None,
+        artist_name: str | None = None,
+        max_results: int = 5,
+    ) -> list[AlbumDetail]:
+        """
+        Text search for albums by title.
+
+        Uses ``GET /api/albums`` with ``nameMatchMode=Words``.  Returns full
+        ``AlbumDetail`` objects including Tracks so the caller can iterate
+        track TouhouDB IDs for composite ingestion.
+
+        Filtering priority: *artist_id* (exact) > *artist_name* (text).
+        """
+        params: dict[str, Any] = {
+            "query": query,
+            "nameMatchMode": "Words",
+            "fields": _ALBUM_FIELDS,
+            "lang": "Default",
+            "maxResults": max_results,
+            "getTotalCount": "false",
+        }
+        if artist_id is not None:
+            params["artistId"] = artist_id
+        elif artist_name:
+            params["artistName"] = artist_name
+
+        data = await self._get("/albums", **params)
+        # /api/albums returns the same paginated wrapper shape as /api/songs
+        items_raw = data.get("items", []) if isinstance(data, dict) else []
+        return [AlbumDetail.model_validate(item) for item in items_raw]
+
     async def get_normalization_count(
         self,
         entity_type: str,

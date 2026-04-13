@@ -394,6 +394,7 @@ tasks = sa.Table(
     ),
     sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("auto_created_by", sa.Text, nullable=True),
+    sa.Column("llm_enriched_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 normalization_metrics = sa.Table(

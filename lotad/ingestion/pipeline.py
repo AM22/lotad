@@ -378,6 +378,7 @@ class IngestPipeline:
                     "video_id": item.video_id,
                     "title": item.title,
                     "is_album": album,
+                    "playlist_db_id": playlist_db_id,
                 }
                 if album and item.description:
                     timestamps = extract_timestamps(item.description)
@@ -526,7 +527,11 @@ class IngestPipeline:
 
         # Check if song is in any other playlist (cross-playlist deduplication)
         other = conn.execute(
-            sa.select(playlist_songs.c.id, playlist_songs.c.playlist_id).where(
+            sa.select(
+                playlist_songs.c.id,
+                playlist_songs.c.playlist_id,
+                playlist_songs.c.source_type,
+            ).where(
                 sa.and_(
                     playlist_songs.c.song_id == song_id,
                     playlist_songs.c.playlist_id != playlist_db_id,
@@ -542,7 +547,9 @@ class IngestPipeline:
                 {
                     "song_id": song_id,
                     "existing_playlist_id": other.playlist_id,
+                    "existing_source_type": other.source_type,
                     "new_playlist_id": playlist_db_id,
+                    "new_source_type": source.value,
                 },
                 conn,
                 related_song_id=song_id,
