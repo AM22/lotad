@@ -518,10 +518,38 @@ class TouhouDBClient:
         )
         return all_songs
 
+    async def search_artists(
+        self,
+        query: str,
+        *,
+        max_results: int = 5,
+    ) -> list[ArtistDetail]:
+        """
+        Text search for artists/circles by name.
+
+        Uses ``GET /api/artists`` with ``nameMatchMode=Words``.
+        Returns enough detail to identify the TouhouDB artist ID for use
+        as a filter in ``search_songs`` / ``search_albums``.
+        """
+        from lotad.ingestion.touhoudb_models import ArtistDetailList
+
+        params: dict[str, Any] = {
+            "query": query,
+            "nameMatchMode": "Words",
+            "fields": _ARTIST_FIELDS,
+            "lang": "Default",
+            "maxResults": max_results,
+            "getTotalCount": "false",
+        }
+        data = await self._get("/artists", **params)
+        page = ArtistDetailList.model_validate(data)
+        return page.items
+
     async def search_songs(
         self,
         query: str,
         *,
+        artist_id: int | None = None,
         artist_name: str | None = None,
         max_results: int = 10,
     ) -> list[SongDetail]:
@@ -532,9 +560,10 @@ class TouhouDBClient:
         words in *query* are matched independently (not as a phrase).  Returns
         full ``SongDetail`` objects with Artists, Albums, Tags, and PVs.
 
-        *artist_name* is passed as the ``artistName`` text filter supported by
-        TouhouDB's VocaDB-based API.  If the parameter is not supported by the
-        live instance, callers should fall back to a query-only search.
+        Filtering priority:
+          1. *artist_id* — exact TouhouDB artist ID (most precise, preferred).
+          2. *artist_name* — text filter; less precise, kept as fallback.
+        Pass at most one; if both provided *artist_id* takes precedence.
         """
         params: dict[str, Any] = {
             "query": query,
@@ -545,7 +574,10 @@ class TouhouDBClient:
             "getTotalCount": "false",
             "sort": "SongInAlbum",
         }
-        if artist_name:
+        if artist_id is not None:
+            params["artistId"] = artist_id
+            params["artistParticipationStatus"] = "Everything"
+        elif artist_name:
             params["artistName"] = artist_name
             params["artistParticipationStatus"] = "Everything"
 
@@ -557,6 +589,7 @@ class TouhouDBClient:
         self,
         query: str,
         *,
+        artist_id: int | None = None,
         artist_name: str | None = None,
         max_results: int = 5,
     ) -> list[AlbumDetail]:
@@ -566,6 +599,8 @@ class TouhouDBClient:
         Uses ``GET /api/albums`` with ``nameMatchMode=Words``.  Returns full
         ``AlbumDetail`` objects including Tracks so the caller can iterate
         track TouhouDB IDs for composite ingestion.
+
+        Filtering priority: *artist_id* (exact) > *artist_name* (text).
         """
         params: dict[str, Any] = {
             "query": query,
@@ -575,7 +610,9 @@ class TouhouDBClient:
             "maxResults": max_results,
             "getTotalCount": "false",
         }
-        if artist_name:
+        if artist_id is not None:
+            params["artistId"] = artist_id
+        elif artist_name:
             params["artistName"] = artist_name
 
         data = await self._get("/albums", **params)

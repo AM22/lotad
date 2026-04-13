@@ -268,6 +268,13 @@ class SongDetailList(_Base):
     totalCount: int = 0
 
 
+class ArtistDetailList(_Base):
+    """Paginated list of artist detail, returned by /api/artists."""
+
+    items: list[ArtistDetail] = Field(default_factory=list)
+    totalCount: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Song-list import models  (GET /api/songLists/import*)
 #

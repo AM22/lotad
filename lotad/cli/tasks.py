@@ -111,7 +111,7 @@ def tasks_list(task_type: str | None, status_str: str, limit: int) -> None:
             status = TaskStatus(status_str.upper())
         except ValueError:
             console.print(f"[red]Unknown status: {status_str!r}[/red]")
-            raise click.Abort()
+            raise click.Abort() from None
 
     parsed_type: TaskType | None = None
     if task_type:
@@ -119,7 +119,7 @@ def tasks_list(task_type: str | None, status_str: str, limit: int) -> None:
             parsed_type = TaskType(task_type.upper())
         except ValueError:
             console.print(f"[red]Unknown task type: {task_type!r}[/red]")
-            raise click.Abort()
+            raise click.Abort() from None
 
     engine = get_engine()
     with engine.connect() as conn:
@@ -400,7 +400,7 @@ def tasks_bulk_dismiss(task_type_str: str, yes: bool) -> None:
         task_type = TaskType(task_type_str.upper())
     except ValueError:
         console.print(f"[red]Unknown task type: {task_type_str!r}[/red]")
-        raise click.Abort()
+        raise click.Abort() from None
 
     engine = get_engine()
     with engine.connect() as conn:
@@ -557,11 +557,13 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
 
 
 async def _do_ingest_single(task_id: int, data: dict, video_row: Any, touhoudb_id: int) -> None:
+    import sqlalchemy as sa
+
     from lotad.config import get_settings
+    from lotad.db.models import playlist_songs as ps_table
+    from lotad.db.models import youtube_videos as yt_table
     from lotad.ingestion.pipeline import IngestPipeline
     from lotad.ingestion.youtube_client import PlaylistItem
-    import sqlalchemy as sa
-    from lotad.db.models import playlist_songs as ps_table, youtube_videos as yt_table
 
     playlist_db_id = data.get("playlist_db_id")
     if playlist_db_id is None:
@@ -669,6 +671,7 @@ async def _do_ingest_composite(
 
 async def _do_ingest_stub(task_id: int, data: dict, video_row: Any, llm_cls: dict) -> None:
     import sqlalchemy as sa
+
     from lotad.agents.llm_extractor import VideoClassification
     from lotad.db.models import youtube_videos as yt_table
     from lotad.ingestion.mappers import ingest_song_from_llm_classification
@@ -848,6 +851,7 @@ def _resolve_missing_lyricist(task_id: int, ctx: dict) -> None:
 
 def _resolve_dropped_video(task_id: int, ctx: dict) -> None:
     import sqlalchemy as sa
+
     from lotad.db.models import playlist_songs as ps_table
 
     task = ctx["task"]
@@ -983,6 +987,7 @@ async def _run_enrich(
     limit: int,
 ) -> None:
     import sqlalchemy as sa
+
     from lotad.agents.llm_extractor import LLMExtractor
     from lotad.config import get_settings
     from lotad.db.models import youtube_videos as yt_table
@@ -1053,13 +1058,15 @@ async def _run_enrich(
                 continue
 
             try:
-                result = await extractor.find_match(
-                    title=video_row.get("title") or "",
-                    description=(video_row.get("description") or "")[:2000],
-                    duration_seconds=video_row.get("duration_seconds"),
-                    channel_name=video_row.get("channel_name"),
-                    is_album_hint=data.get("is_album", False),
-                )
+                with engine.connect() as match_conn:
+                    result = await extractor.find_match(
+                        title=video_row.get("title") or "",
+                        description=video_row.get("description") or "",
+                        duration_seconds=video_row.get("duration_seconds"),
+                        channel_name=video_row.get("channel_name"),
+                        is_album_hint=data.get("is_album", False),
+                        conn=match_conn,
+                    )
             except Exception as exc:
                 console.print(
                     f"[{i}/{total}] #{tid}  {short_title!r}  — [red]error: {exc}[/red]"

@@ -48,6 +48,7 @@ from lotad.db.models import (
     playlist_songs,
     song_artists,
     song_characters,
+    song_originals,
     song_tags,
     songs,
     works,
@@ -870,18 +871,38 @@ def ingest_song_from_llm_classification(
       - ``songs`` row (no touhoudb_id)
       - ``artists`` rows for circle and individual arrangers/vocalists (no touhoudb_id)
       - ``song_artists`` rows for CIRCLE, ARRANGER, VOCALIST roles
+      - ``song_originals`` links for any ``original_song_names`` present in the
+        classification that can be matched by name in our ``original_songs`` table
+      - ``album_tracks`` link if ``album_title`` matches an existing album in our DB
       - ``playlist_songs`` entry with INDIVIDUAL_VIDEO source
 
-    Does NOT create: album linkage, original songs, song_languages, tags.
-    These can be backfilled once/if the song appears on TouhouDB.
+    Does NOT create: song_languages, tags.  These are TouhouDB-sourced and can be
+    backfilled once/if the song appears on TouhouDB.
+
+    ``is_original_composition`` logic:
+      - If the LLM explicitly set ``is_original_composition=True`` → mark as original.
+      - If ``original_song_names`` is non-empty → arrangement (False).
+      - If both are absent/null → assume original composition, since songs that fall
+        through to stub insertion are disproportionately original works not yet on TouhouDB.
 
     Returns the internal ``songs.id``.
     """
-    # Import here to avoid circular at module load time
-    from lotad.agents.llm_extractor import VideoClassification  # noqa: F401
-
     title = getattr(classification, "song_title", None) or "Unknown"
     has_lyrics = bool(getattr(classification, "vocalist_names", None))
+    original_song_names: list[str] = getattr(classification, "original_song_names", None) or []
+    llm_is_original: bool | None = getattr(classification, "is_original_composition", None)
+    album_title: str | None = getattr(classification, "album_title", None)
+
+    # Determine is_original_composition
+    if llm_is_original is True:
+        is_orig = True
+    elif original_song_names:
+        is_orig = False  # Has source material → it's an arrangement
+    else:
+        # No source named and LLM didn't say it's an arrangement → treat as original
+        is_orig = llm_is_original if llm_is_original is not None else True
+
+    song_type = SongType.ORIGINAL if is_orig else SongType.ARRANGEMENT
 
     song_stmt = (
         pg_insert(songs)
@@ -891,13 +912,13 @@ def ingest_song_from_llm_classification(
             title_romanized=None,
             duration_seconds=None,
             has_lyrics=has_lyrics,
-            is_original_composition=False,
-            song_type=SongType.ARRANGEMENT,
+            is_original_composition=is_orig,
+            song_type=song_type,
         )
         .returning(songs.c.id)
     )
     song_id: int = conn.execute(song_stmt).scalar_one()
-    logger.info("Inserted LLM stub song id=%d title=%r", song_id, title)
+    logger.info("Inserted LLM stub song id=%d title=%r is_orig=%s", song_id, title, is_orig)
 
     def _upsert_stub_artist(name: str, artist_type: ArtistType, role: SongRole) -> None:
         stmt = (
@@ -931,6 +952,67 @@ def ingest_song_from_llm_classification(
 
     for name in getattr(classification, "lyricist_names", []) or []:
         _upsert_stub_artist(name, ArtistType.INDIVIDUAL, SongRole.LYRICIST)
+
+    # Link original songs by name-matching against our original_songs table.
+    # We use ILIKE for case-insensitive matching and substring fallback so that
+    # common romanisation variants ("Faith is for the Transient People" vs the
+    # Japanese name) still connect when possible.
+    for orig_name in original_song_names:
+        orig_row = conn.execute(
+            sa.select(original_songs.c.id).where(
+                original_songs.c.name.ilike(orig_name)
+            )
+        ).one_or_none()
+        if orig_row is None:
+            # Try substring match in both directions
+            orig_row = conn.execute(
+                sa.select(original_songs.c.id).where(
+                    sa.or_(
+                        original_songs.c.name.ilike(f"%{orig_name}%"),
+                        sa.cast(orig_name, sa.Text).ilike(
+                            sa.func.concat("%", original_songs.c.name, "%")
+                        ),
+                    )
+                )
+            ).one_or_none()
+        if orig_row is not None:
+            conn.execute(
+                pg_insert(song_originals)
+                .values(song_id=song_id, original_song_id=orig_row[0])
+                .on_conflict_do_nothing()
+            )
+            logger.debug("Linked original_song id=%d to stub song %d", orig_row[0], song_id)
+        else:
+            logger.debug("No original_songs match for %r — skipping link", orig_name)
+
+    # Link album if album_title matches an existing album by title (ILIKE).
+    if album_title:
+        album_row = conn.execute(
+            sa.select(albums.c.id).where(albums.c.title.ilike(album_title))
+        ).one_or_none()
+        if album_row is not None:
+            # Determine next available track number on that album
+            max_track = conn.execute(
+                sa.select(sa.func.max(album_tracks.c.track_number)).where(
+                    album_tracks.c.album_id == album_row[0]
+                )
+            ).scalar()
+            next_track = (max_track or 0) + 1
+            conn.execute(
+                pg_insert(album_tracks)
+                .values(
+                    album_id=album_row[0],
+                    song_id=song_id,
+                    track_number=next_track,
+                )
+                .on_conflict_do_nothing()
+            )
+            logger.debug(
+                "Linked stub song %d to album id=%d as track %d",
+                song_id,
+                album_row[0],
+                next_track,
+            )
 
     conn.execute(
         pg_insert(playlist_songs)

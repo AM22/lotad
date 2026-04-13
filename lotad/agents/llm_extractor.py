@@ -13,9 +13,9 @@ be audited and tuned without API cost.
 from __future__ import annotations
 
 import difflib
-import enum
 import logging
-from typing import Any
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
 import anthropic
 from pydantic import BaseModel, Field
@@ -24,6 +24,9 @@ from lotad.config import Settings
 from lotad.db.models import ConfidenceLevel
 from lotad.ingestion.touhoudb_client import TouhouDBClient
 from lotad.ingestion.touhoudb_models import AlbumDetail, SongDetail
+
+if TYPE_CHECKING:
+    from sqlalchemy import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,7 @@ _MEDIUM_THRESHOLD = 0.55
 # ---------------------------------------------------------------------------
 
 
-class VideoType(str, enum.Enum):
+class VideoType(StrEnum):
     SINGLE_SONG = "single_song"
     FULL_ALBUM = "full_album"
     COMPOSITE_TRACKS = "composite_tracks"
@@ -75,6 +78,12 @@ class VideoClassification(BaseModel):
 
     # Composite tracks
     tracks: list[TrackInfo] = Field(default_factory=list)
+
+    # Whether the video is an original ZUN-sourced composition (not an arrangement).
+    # Songs that fall through to stub insertion are disproportionately original
+    # compositions since they often won't be on TouhouDB.
+    # null = uncertain; true = original; false = arrangement.
+    is_original_composition: bool | None = None
 
     # Shared
     extraction_notes: str | None = None
@@ -238,6 +247,14 @@ _TOOL_DEF = {
                     },
                     "required": ["title"],
                 },
+            },
+            "is_original_composition": {
+                "type": ["boolean", "null"],
+                "description": (
+                    "True if this is an original composition (not a Touhou arrangement). "
+                    "Null if uncertain. Most videos in this pipeline are arrangements, "
+                    "but some circles release original music too."
+                ),
             },
             "extraction_notes": {
                 "type": ["string", "null"],
@@ -427,12 +444,12 @@ class LLMExtractor:
             f"Channel: {channel_name or 'unknown'}\n"
             f"Duration: {dur_str}\n"
             f"Pipeline heuristic is_album_hint: {is_album_hint} (may be inaccurate)\n"
-            f"\nDescription (first 2000 chars):\n{description[:2000]}"
+            f"\nDescription:\n{description}"
         )
 
         response = await self._client.messages.create(
             model=self._settings.anthropic_model,
-            max_tokens=1024,
+            max_tokens=2048,
             system=_SYSTEM_PROMPT,
             tools=[_TOOL_DEF],
             tool_choice={"type": "tool", "name": "classify_video"},
@@ -461,6 +478,67 @@ class LLMExtractor:
 
         return VideoClassification.model_validate(tool_input)
 
+    async def _resolve_artist_id(
+        self,
+        circle_name: str,
+        conn: Connection | None,
+    ) -> int | None:
+        """
+        Resolve a circle name to a TouhouDB artist ID.
+
+        Search strategy (in order):
+          1. Look up ``artists.touhoudb_id`` in our local DB by name (exact, then ILIKE).
+             Most circles will already be present after bulk ingestion.
+          2. Fall back to TouhouDB ``/api/artists`` text search.
+
+        Returns the TouhouDB artist ID, or None if unresolvable.
+        """
+        import sqlalchemy as sa
+
+        from lotad.db.models import artists as artists_table
+
+        if conn is not None:
+            # 1a. Exact name match
+            row = conn.execute(
+                sa.select(artists_table.c.touhoudb_id).where(
+                    artists_table.c.name == circle_name,
+                    artists_table.c.touhoudb_id.isnot(None),
+                )
+            ).one_or_none()
+            if row:
+                return row[0]
+
+            # 1b. Case-insensitive ILIKE (handles minor capitalisation differences)
+            row = conn.execute(
+                sa.select(artists_table.c.touhoudb_id).where(
+                    artists_table.c.name.ilike(circle_name),
+                    artists_table.c.touhoudb_id.isnot(None),
+                )
+            ).one_or_none()
+            if row:
+                return row[0]
+
+        # 2. TouhouDB artist search fallback
+        try:
+            results = await self._tdb.search_artists(circle_name, max_results=3)
+        except Exception:
+            logger.debug("TouhouDB artist search failed for %r", circle_name)
+            return None
+
+        if not results:
+            return None
+
+        # Pick the result whose name is most similar to the query
+        best = max(
+            results,
+            key=lambda a: _fuzzy_similarity(circle_name, a.name),
+        )
+        sim = _fuzzy_similarity(circle_name, best.name)
+        if sim < 0.6:
+            return None  # Not confident enough to use
+
+        return best.id
+
     async def find_match(
         self,
         *,
@@ -469,13 +547,15 @@ class LLMExtractor:
         duration_seconds: int | None,
         channel_name: str | None = None,
         is_album_hint: bool = False,
+        conn: Connection | None = None,
     ) -> MatchResult:
         """
         Full matching pipeline:
           1. classify_video → VideoClassification
-          2. Search TouhouDB based on video_type
-          3. Score candidates deterministically
-          4. Return MatchResult with confidence
+          2. Resolve circle name → TouhouDB artist ID (DB first, then TouhouDB search)
+          3. Search TouhouDB based on video_type, filtered by artist ID when available
+          4. Score candidates deterministically
+          5. Return MatchResult with confidence
         """
         classification = await self.classify_video(
             title=title,
@@ -485,19 +565,31 @@ class LLMExtractor:
             is_album_hint=is_album_hint,
         )
 
+        # Pre-resolve artist ID — used by all search paths
+        artist_id: int | None = None
+        if classification.circle_name:
+            artist_id = await self._resolve_artist_id(classification.circle_name, conn)
+            if artist_id:
+                logger.debug(
+                    "Resolved circle %r → TouhouDB artist_id=%d",
+                    classification.circle_name,
+                    artist_id,
+                )
+
         vtype = classification.video_type
 
         if vtype == VideoType.FULL_ALBUM:
-            return await self._match_full_album(classification, duration_seconds)
+            return await self._match_full_album(classification, duration_seconds, artist_id)
         elif vtype == VideoType.COMPOSITE_TRACKS:
-            return await self._match_composite(classification, duration_seconds)
+            return await self._match_composite(classification, duration_seconds, artist_id)
         else:
-            return await self._match_single_song(classification, duration_seconds)
+            return await self._match_single_song(classification, duration_seconds, artist_id)
 
     async def _match_single_song(
         self,
         classification: VideoClassification,
         video_duration: int | None,
+        artist_id: int | None = None,
     ) -> MatchResult:
         """Search and score for a single-song video."""
         query = classification.song_title or ""
@@ -508,12 +600,22 @@ class LLMExtractor:
                 classification=classification,
             )
 
-        songs = await self._tdb.search_songs(
-            query, artist_name=classification.circle_name
-        )
-
-        # Fallback: if artist_name filter returned nothing, try without
-        if not songs and classification.circle_name:
+        # Prefer artist_id filter (exact); fall back to artistName text filter;
+        # final fallback is query-only.
+        if artist_id is not None:
+            songs = await self._tdb.search_songs(query, artist_id=artist_id)
+            if not songs:
+                # artist_id filter may be too narrow (e.g. circle ≠ primary artist);
+                # retry without filter
+                songs = await self._tdb.search_songs(query)
+        elif classification.circle_name:
+            songs = await self._tdb.search_songs(
+                query, artist_name=classification.circle_name
+            )
+            # Fallback: if artist_name filter returned nothing, try without
+            if not songs:
+                songs = await self._tdb.search_songs(query)
+        else:
             songs = await self._tdb.search_songs(query)
 
         candidates = _candidates_from_songs(songs, classification, video_duration)
@@ -540,17 +642,27 @@ class LLMExtractor:
         self,
         classification: VideoClassification,
         video_duration: int | None,
+        artist_id: int | None = None,
     ) -> MatchResult:
         """Search TouhouDB for an album and return all track IDs."""
         query = classification.album_title or ""
         if not query:
             # No album title extracted; fall back to song-level search
-            return await self._match_single_song(classification, video_duration)
+            return await self._match_single_song(classification, video_duration, artist_id)
 
-        albums: list[AlbumDetail] = await self._tdb.search_albums(
-            query, artist_name=classification.circle_name
-        )
-        if not albums and classification.circle_name:
+        if artist_id is not None:
+            albums: list[AlbumDetail] = await self._tdb.search_albums(
+                query, artist_id=artist_id
+            )
+            if not albums:
+                albums = await self._tdb.search_albums(query)
+        elif classification.circle_name:
+            albums = await self._tdb.search_albums(
+                query, artist_name=classification.circle_name
+            )
+            if not albums:
+                albums = await self._tdb.search_albums(query)
+        else:
             albums = await self._tdb.search_albums(query)
 
         if not albums:
@@ -601,6 +713,7 @@ class LLMExtractor:
         self,
         classification: VideoClassification,
         video_duration: int | None,
+        artist_id: int | None = None,
     ) -> MatchResult:
         """Match each track in a composite video independently."""
         track_results: list[MatchResult] = []
@@ -613,7 +726,9 @@ class LLMExtractor:
                 circle_name=track.circle_name or classification.circle_name,
                 album_title=classification.album_title,
             )
-            result = await self._match_single_song(per_track_cls, video_duration=None)
+            result = await self._match_single_song(
+                per_track_cls, video_duration=None, artist_id=artist_id
+            )
             track_results.append(result)
 
         # Overall confidence = minimum across tracks
