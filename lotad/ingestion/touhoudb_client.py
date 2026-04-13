@@ -293,9 +293,15 @@ class TouhouDBClient:
         if _visited is None:
             _visited = frozenset()
 
-        if song_id in _visited or _depth >= max_depth:
+        if song_id in _visited:
+            # Already accounted for in this traversal (e.g. an alternate version
+            # whose originalVersionId points back to an ancestor).  No new
+            # originals via this path.
+            return []
+
+        if _depth >= max_depth:
             logger.warning(
-                "Original chain for song %d: cycle or max depth reached at depth %d",
+                "Original chain for song %d: max depth reached at depth %d",
                 song_id,
                 _depth,
             )
