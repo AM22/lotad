@@ -587,9 +587,7 @@ class IngestPipeline:
             existing = conn.execute(sa.select(tasks.c.id).where(dedup_filter)).first()
             if existing:
                 conn.execute(
-                    tasks.update()
-                    .where(tasks.c.id == existing[0])
-                    .values(title=title, data=data)
+                    tasks.update().where(tasks.c.id == existing[0]).values(title=title, data=data)
                 )
                 return
 
