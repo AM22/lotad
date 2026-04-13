@@ -121,16 +121,14 @@ amounts of arranged music ("arrangements") based on ZUN's original compositions.
 - **ZUN original**: The source theme being arranged (e.g. "Faith is for the Transient People",
   "Beloved Tomboyish Girl").
 - **XFD / crossfade**: A preview video containing 30-60s clips of multiple tracks from an album.
-  These are full_album videos.
 - **M3, Comiket (C73–C105)**: Doujin events where circles release new albums.
 
 ## Title patterns to recognise
 
-- "Song Title / Circle Name" — single song
+- "Song Title / Circle Name", "[Touhou Vocal] Circle Name - Song Title", "[Touhou Vocal] Song Title [Circle Name]", "[Touhou Vocal] Song Title [Circle Name] Original Song Name", "Track Number. Song Name - Arranger(s)", "Vocalist ~ Song Name(Original Song Name)", etc.  — single song
 - "Song Title [Album Name] / Circle Name" — single song with album context
-- "Song A + Song B [Album]" or "Song A × Song B" — composite_tracks (multiple songs, one video)
+- "Song A + Song B [Album]", "Song A × Song B [Circle]", "[Touhou Vocal] Circle | Song A & Song B [Language Subs]" — composite_tracks (multiple songs, one video)
 - "Circle Name – Album Title (full album)", "Circle Name – Full Album XFD" — full_album
-- "Album Name クロスフェード", "Album Title M3-XXXX" — full_album (crossfade / event release)
 
 ## Description patterns
 
@@ -143,7 +141,13 @@ Many descriptions are structured like:
   Original: ...
   Source: ...
 
-Extract all available fields. Leave fields null/empty when genuinely unknown — do not guess.
+Extract all available fields. Leave fields null/empty when genuinely unknown — do not guess. 
+
+Description may signal composite videos even if the title format looks like a single song. Presence of timestamps signals that the song could be (but is not guaranteed to be) a composite.
+Example composite description:
+Titles: 
+Timestamp 1 - Track 1
+Timestamp 2 - Track 2
 
 ## Classification rules
 
@@ -151,7 +155,7 @@ Extract all available fields. Leave fields null/empty when genuinely unknown —
 - **full_album**: An entire album in one video. Typically 20–80 minutes, often has a timestamped
   tracklist in the description, or "full album" / "XFD" / "クロスフェード" in the title.
 - **composite_tracks**: Multiple distinct songs compiled into one video but NOT a full album
-  (e.g. "Secret Garden + Scarlet Serenade", medleys, "Best of" selections of 2–5 tracks).
+  (e.g. "Secret Garden + Scarlet Serenade", "Best of" selections of 2–5 tracks).
   Typically 5–20 minutes.
 
 The pipeline heuristic (`is_album_hint`) may be inaccurate — use your own judgement.
