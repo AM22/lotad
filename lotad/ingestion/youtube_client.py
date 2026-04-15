@@ -191,6 +191,52 @@ class YouTubeClient:
             is_available=title not in ("Deleted video", "Private video"),
         )
 
+    def get_video_comments(
+        self,
+        video_id: str,
+        *,
+        max_results: int = 10,
+    ) -> list[str]:
+        """
+        Fetch the top comments for a video (ordered by relevance).
+
+        Returns a list of plain-text comment strings.  Returns an empty list
+        if comments are disabled, the video does not exist, or the API call
+        fails for any reason — callers should treat an empty result as "no
+        additional context available" rather than an error.
+
+        Note: ``commentThreads.list`` only requires a developer key (no OAuth)
+        for public videos, which is what this client already uses.
+        """
+        try:
+            resp = (
+                self._service.commentThreads()
+                .list(
+                    part="snippet",
+                    videoId=video_id,
+                    order="relevance",
+                    maxResults=max_results,
+                    textFormat="plainText",
+                )
+                .execute()
+            )
+        except HttpError as exc:
+            # 403 = comments disabled; 404 = video not found — both expected
+            logger.debug("commentThreads.list failed for %s: %s", video_id, exc)
+            return []
+
+        comments: list[str] = []
+        for item in resp.get("items", []):
+            text = (
+                item.get("snippet", {})
+                .get("topLevelComment", {})
+                .get("snippet", {})
+                .get("textDisplay", "")
+            )
+            if text:
+                comments.append(text)
+        return comments
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
