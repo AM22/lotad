@@ -414,9 +414,7 @@ class IngestPipeline:
                             if track.song is None or track.trackNumber is None:
                                 continue
                             row = conn.execute(
-                                sa.select(songs.c.id).where(
-                                    songs.c.touhoudb_id == track.song.id
-                                )
+                                sa.select(songs.c.id).where(songs.c.touhoudb_id == track.song.id)
                             ).one_or_none()
                             if row is None:
                                 continue
@@ -731,9 +729,7 @@ class IngestPipeline:
         for track in tracks:
             assert track.song is not None  # narrowed by filter above
             row = conn.execute(
-                sa.select(songs.c.duration_seconds).where(
-                    songs.c.touhoudb_id == track.song.id
-                )
+                sa.select(songs.c.duration_seconds).where(songs.c.touhoudb_id == track.song.id)
             ).one_or_none()
             duration = row[0] if row is not None else None
 
