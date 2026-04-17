@@ -41,6 +41,7 @@ from lotad.db.models import (
     TaskType,
     playlist_songs,
     playlists,
+    songs,
     tasks,
     youtube_videos,
 )
@@ -53,7 +54,7 @@ from lotad.ingestion.mappers import (
     map_song_to_db,
 )
 from lotad.ingestion.touhoudb_client import TouhouDBClient
-from lotad.ingestion.touhoudb_models import SongDetail
+from lotad.ingestion.touhoudb_models import AlbumDetail, SongDetail
 from lotad.ingestion.youtube_client import PlaylistItem, YouTubeClient
 
 logger = logging.getLogger(__name__)
@@ -124,13 +125,9 @@ def extract_timestamps(description: str) -> list[tuple[int, str]]:
     Recognises ``MM:SS`` and ``HH:MM:SS`` followed by a track title.
     Returns ``[(seconds, title), ...]`` sorted by timestamp ascending.
 
-    Currently used to enrich ``INGEST_FAILED`` task data for unmatched album
-    videos (M4 LLM fallback reads ``extracted_timestamps`` from task data).
-
-    TODO (M3 composite-video path): also call this in the *matched* album path
-    and pass the result to ``map_album_to_db`` so that
-    ``album_tracks.youtube_timestamp_seconds`` is populated for each track,
-    enabling per-track playback links.
+    Used both to enrich ``INGEST_FAILED`` task data for unmatched album videos
+    and as a fallback within ``_compute_album_timestamps`` for matched composite
+    videos whose tracks lack TouhouDB duration data.
     """
     # "MM:SS Title" — timestamp at start of chapter line (standard YouTube chapters)
     forward = _re.compile(r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[ \t]+[.\-–—|]?[ \t]*(.+)")
@@ -397,6 +394,7 @@ class IngestPipeline:
             song_id = map_song_to_db(song_detail, conn)
 
             # 3.5. Ingest albums this song appears on
+            composite = is_album_video(item)
             for album_summary in song_detail.albums:
                 try:
                     album_detail = await self._tdb.get_album(album_summary.id)
@@ -408,6 +406,37 @@ class IngestPipeline:
                         album_summary.name,
                         n_linked,
                     )
+                    if composite and playlist_db_id is not None:
+                        ts_map = self._compute_album_timestamps(
+                            album_detail, item.description, conn
+                        )
+                        for track in album_detail.tracks:
+                            if track.song is None or track.trackNumber is None:
+                                continue
+                            row = conn.execute(
+                                sa.select(songs.c.id).where(
+                                    songs.c.touhoudb_id == track.song.id
+                                )
+                            ).one_or_none()
+                            if row is None:
+                                continue
+                            ts = ts_map.get(track.song.id)
+                            self._upsert_playlist_song(
+                                song_id=row.id,
+                                playlist_db_id=playlist_db_id,
+                                yt_video_id=yt_video_id,
+                                source=SourceType.COMPOSITE_VIDEO,
+                                youtube_timestamp_seconds=ts,
+                                conn=conn,
+                            )
+                            if ts is None:
+                                self._create_task(
+                                    TaskType.SUSPICIOUS_METADATA,
+                                    f"Could not determine timestamp for song {row.id} in composite video",
+                                    {"song_id": row.id, "video_id": item.video_id},
+                                    conn,
+                                    related_song_id=row.id,
+                                )
                 except Exception:
                     logger.exception(
                         "Failed to ingest album touhoudb_id=%d for song %d — skipping",
@@ -442,20 +471,19 @@ class IngestPipeline:
                     logger.exception("resolve_original_chain failed for song %d", song_id)
 
             # 5. Integrity checks
-            self._integrity_checks(song_detail, song_id, yt_video_id, item, conn)
+            self._integrity_checks(
+                song_detail, song_id, yt_video_id, item, conn, is_composite=composite
+            )
 
-            # 6. Create playlist_songs row (if playlist known)
-            if playlist_db_id is not None:
-                source = (
-                    SourceType.COMPOSITE_VIDEO
-                    if is_album_video(item)
-                    else SourceType.INDIVIDUAL_VIDEO
-                )
+            # 6. Create playlist_songs row for individual videos.
+            # Composite videos are fully handled in step 3.5 (one row per album
+            # track, with timestamps), so we skip this step for them.
+            if playlist_db_id is not None and not composite:
                 self._upsert_playlist_song(
                     song_id=song_id,
                     playlist_db_id=playlist_db_id,
                     yt_video_id=yt_video_id,
-                    source=source,
+                    source=SourceType.INDIVIDUAL_VIDEO,
                     conn=conn,
                 )
 
@@ -500,6 +528,7 @@ class IngestPipeline:
         yt_video_id: int,
         source: SourceType,
         conn: Connection,
+        youtube_timestamp_seconds: int | None = None,
     ) -> None:
         # Check for existing active entry (removed_at IS NULL)
         existing = conn.execute(
@@ -513,14 +542,15 @@ class IngestPipeline:
         ).one_or_none()
 
         if existing:
-            # Deduplication: song already in this playlist — update source if
-            # INDIVIDUAL_VIDEO is more specific than COMPOSITE_VIDEO.
+            # Deduplication: song already in this playlist — update video,
+            # source, and timestamp.
             conn.execute(
                 playlist_songs.update()
                 .where(playlist_songs.c.id == existing.id)
                 .values(
                     youtube_video_id=yt_video_id,
                     source_type=source,
+                    youtube_timestamp_seconds=youtube_timestamp_seconds,
                 )
             )
             return
@@ -562,6 +592,7 @@ class IngestPipeline:
                 playlist_id=playlist_db_id,
                 youtube_video_id=yt_video_id,
                 source_type=source,
+                youtube_timestamp_seconds=youtube_timestamp_seconds,
             )
             .on_conflict_do_nothing()
         )
@@ -634,11 +665,16 @@ class IngestPipeline:
         yt_video_id: int,
         item: PlaylistItem,
         conn: Connection,
+        *,
+        is_composite: bool = False,
     ) -> None:
         """Run metadata integrity checks; create tasks on violations."""
-        # Duration mismatch: >20% difference
+        # Duration mismatch: >20% difference.
+        # Skipped for composite videos — the video duration will always dwarf
+        # any individual track's TouhouDB duration, so the mismatch is expected.
         if (
-            detail.lengthSeconds
+            not is_composite
+            and detail.lengthSeconds
             and item.duration_seconds
             and abs(detail.lengthSeconds - item.duration_seconds) / max(detail.lengthSeconds, 1)
             > 0.20
@@ -667,3 +703,62 @@ class IngestPipeline:
                     conn,
                     related_song_id=song_id,
                 )
+
+    def _compute_album_timestamps(
+        self,
+        album_detail: AlbumDetail,
+        description: str | None,
+        conn: Connection,
+    ) -> dict[int, int | None]:
+        """Compute {touhoudb_song_id: start_timestamp_seconds | None} for every track.
+
+        Strategy:
+        1. Walk tracks in disc/track order, accumulating durations from the DB.
+           Stop accumulating at the first track with a NULL duration.
+        2. For any tracks still missing a timestamp, fill by position from
+           description timestamps (parsed from the video description).
+        3. Tracks still unresolved after both passes → None.
+        """
+        tracks = sorted(
+            [t for t in album_detail.tracks if t.song is not None and t.trackNumber is not None],
+            key=lambda t: (t.discNumber, t.trackNumber),
+        )
+
+        # Pass 1: cumulative durations from DB
+        result: dict[int, int | None] = {}
+        offset = 0
+        accumulating = True
+        for track in tracks:
+            assert track.song is not None  # narrowed by filter above
+            row = conn.execute(
+                sa.select(songs.c.duration_seconds).where(
+                    songs.c.touhoudb_id == track.song.id
+                )
+            ).one_or_none()
+            duration = row[0] if row is not None else None
+
+            if accumulating:
+                result[track.song.id] = offset
+                if duration is None:
+                    accumulating = False
+                else:
+                    offset += duration
+            else:
+                result[track.song.id] = None
+
+        # Pass 2: description fallback for any None entries
+        missing = [t for t in tracks if result.get(t.song.id) is None]  # type: ignore[union-attr]
+        if missing and description:
+            desc_timestamps = extract_timestamps(description)
+            # Align by position: find where the description entries begin for
+            # the un-timestamped suffix.  The first un-timestamped track is at
+            # index `len(tracks) - len(missing)` in the sorted track list, so
+            # the matching description entry is at the same index.
+            start_idx = len(tracks) - len(missing)
+            for i, track in enumerate(missing):
+                assert track.song is not None
+                desc_idx = start_idx + i
+                if desc_idx < len(desc_timestamps):
+                    result[track.song.id] = desc_timestamps[desc_idx][0]
+
+        return result
