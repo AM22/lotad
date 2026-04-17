@@ -12,6 +12,7 @@ be audited and tuned without API cost.
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import logging
 from enum import StrEnum
@@ -27,6 +28,8 @@ from lotad.ingestion.touhoudb_models import AlbumDetail, SongDetail
 
 if TYPE_CHECKING:
     from sqlalchemy import Connection
+
+    from lotad.ingestion.youtube_client import YouTubeClient
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +268,39 @@ _TOOL_DEF = {
     },
 }
 
+# Tool the LLM can call instead of classify_video when title+description alone
+# are not sufficient.  The pipeline responds by fetching YouTube comments and
+# then calling Claude a second time with classify_video forced.
+_REQUEST_CONTEXT_TOOL: dict = {
+    "name": "request_more_context",
+    "description": (
+        "Call this when the YouTube title and description do not contain enough "
+        "information to reliably classify the video or extract artist/original metadata. "
+        "The pipeline will fetch the top YouTube comments for this video and provide "
+        "them to you in a follow-up message, after which you MUST call classify_video.\n\n"
+        "Good reasons to request context:\n"
+        "- Description is empty or contains only a URL/social links\n"
+        "- Title has two names with no structural markers (circle vs. vocalist ambiguous)\n"
+        "- Video appears to be a medley/mashup but no original song names are visible\n\n"
+        "Do NOT request context if you can already extract useful metadata — comments "
+        "may be equally sparse."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Brief explanation of what is missing (e.g. 'description is empty "
+                    "and title has two names with no structural role markers — comments "
+                    "may contain original song timestamps or circle attribution')."
+                ),
+            }
+        },
+        "required": ["reason"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Scoring helpers
@@ -420,9 +456,16 @@ class LLMExtractor:
             )
     """
 
-    def __init__(self, settings: Settings, tdb_client: TouhouDBClient) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        tdb_client: TouhouDBClient,
+        *,
+        youtube_client: YouTubeClient | None = None,
+    ) -> None:
         self._settings = settings
         self._tdb = tdb_client
+        self._yt = youtube_client
         self._client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     async def classify_video(
@@ -433,10 +476,19 @@ class LLMExtractor:
         duration_seconds: int | None,
         channel_name: str | None = None,
         is_album_hint: bool = False,
+        youtube_video_id: str | None = None,
     ) -> VideoClassification:
         """
         Call Claude to classify the video and extract structured search terms.
-        Uses tool-use (forced) for reliable structured output.
+
+        Two-tool pattern (input suspension):
+          - First call offers both ``classify_video`` and ``request_more_context``.
+          - If the LLM signals that title + description are insufficient, fetch
+            the top YouTube comments and continue the conversation, then force
+            ``classify_video`` on a second pass.
+          - If no ``youtube_video_id`` / ``YouTubeClient`` is available, or if
+            comments are disabled, the second pass still runs — just without
+            the extra context.
         """
         dur_str = (
             f"{duration_seconds // 60}:{duration_seconds % 60:02d}"
@@ -451,21 +503,82 @@ class LLMExtractor:
             f"\nDescription:\n{description}"
         )
 
+        # First pass — offer both tools so the LLM can request comments if needed
+        messages: list[dict] = [{"role": "user", "content": user_message}]
         response = await self._client.messages.create(
             model=self._settings.anthropic_model,
             max_tokens=2048,
             system=_SYSTEM_PROMPT,
-            tools=[_TOOL_DEF],
-            tool_choice={"type": "tool", "name": "classify_video"},
-            messages=[{"role": "user", "content": user_message}],
+            tools=[_TOOL_DEF, _REQUEST_CONTEXT_TOOL],
+            tool_choice={"type": "any"},
+            messages=messages,
         )
 
-        # Extract tool_use block
-        tool_input: dict[str, Any] = {}
+        # Check which tool was called
+        tool_use_block = None
         for block in response.content:
-            if block.type == "tool_use" and block.name == "classify_video":
-                tool_input = block.input
+            if block.type == "tool_use":
+                tool_use_block = block
                 break
+
+        if tool_use_block is not None and tool_use_block.name == "request_more_context":
+            reason = tool_use_block.input.get("reason", "")
+            logger.info(
+                "LLM requested more context for %r: %s",
+                title,
+                reason,
+            )
+
+            # Fetch comments (best-effort — empty string if unavailable)
+            comments_text = ""
+            if self._yt is not None and youtube_video_id is not None:
+                comments = await asyncio.to_thread(
+                    self._yt.get_video_comments,
+                    youtube_video_id,
+                    max_results=15,
+                )
+                if comments:
+                    comments_text = "Top YouTube comments:\n" + "\n---\n".join(comments)
+                    logger.debug("Fetched %d comments for %s", len(comments), youtube_video_id)
+                else:
+                    comments_text = "(Comments are disabled or unavailable for this video.)"
+            else:
+                comments_text = "(No YouTube client available — cannot fetch comments.)"
+
+            # Continue the conversation: tool result → second pass (forced)
+            messages = [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": response.content},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_block.id,
+                            "content": comments_text,
+                        }
+                    ],
+                },
+            ]
+            response = await self._client.messages.create(
+                model=self._settings.anthropic_model,
+                max_tokens=2048,
+                system=_SYSTEM_PROMPT,
+                tools=[_TOOL_DEF],
+                tool_choice={"type": "tool", "name": "classify_video"},
+                messages=messages,
+            )
+            # Re-scan for classify_video block in the new response
+            tool_use_block = None
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "classify_video":
+                    tool_use_block = block
+                    break
+
+        # Extract classify_video input
+        tool_input: dict[str, Any] = {}
+        if tool_use_block is not None and tool_use_block.name == "classify_video":
+            tool_input = tool_use_block.input
 
         if not tool_input:
             logger.warning("LLM returned no tool_use block for title=%r", title)
@@ -552,10 +665,11 @@ class LLMExtractor:
         channel_name: str | None = None,
         is_album_hint: bool = False,
         conn: Connection | None = None,
+        youtube_video_id: str | None = None,
     ) -> MatchResult:
         """
         Full matching pipeline:
-          1. classify_video → VideoClassification
+          1. classify_video → VideoClassification (with optional comment fetch)
           2. Resolve circle name → TouhouDB artist ID (DB first, then TouhouDB search)
           3. Search TouhouDB based on video_type, filtered by artist ID when available
           4. Score candidates deterministically
@@ -567,6 +681,7 @@ class LLMExtractor:
             duration_seconds=duration_seconds,
             channel_name=channel_name,
             is_album_hint=is_album_hint,
+            youtube_video_id=youtube_video_id,
         )
 
         # Pre-resolve artist ID — used by all search paths

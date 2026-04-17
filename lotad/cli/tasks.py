@@ -473,6 +473,96 @@ def tasks_resolve(task_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Classification display + interactive editor
+# ---------------------------------------------------------------------------
+
+_CLS_STRING_FIELDS: list[tuple[str, str]] = [
+    ("song_title", "Song title"),
+    ("circle_name", "Circle"),
+    ("album_title", "Album"),
+    ("release_date", "Release date"),
+    ("release_event", "Event"),
+    ("original_game_name", "Source game"),
+]
+_CLS_LIST_FIELDS: list[tuple[str, str]] = [
+    ("arranger_names", "Arrangers"),
+    ("vocalist_names", "Vocalists"),
+    ("lyricist_names", "Lyricists"),
+    ("original_song_names", "Original songs"),
+]
+
+
+def _print_classification_summary(cls: dict) -> None:
+    """Print a compact classification panel to the console."""
+    lines: list[str] = []
+    for key, label in _CLS_STRING_FIELDS:
+        val = cls.get(key)
+        if val:
+            lines.append(f"  {label:<16}: {val}")
+    for key, label in _CLS_LIST_FIELDS:
+        vals = cls.get(key) or []
+        if vals:
+            lines.append(f"  {label:<16}: {', '.join(vals)}")
+    is_orig = cls.get("is_original_composition")
+    if is_orig is not None:
+        lines.append(f"  {'Is original':<16}: {is_orig}")
+    vtype = cls.get("video_type", "?")
+    conf = cls.get("confidence_in_classification", "?")
+    lines.append(f"  {'Video type':<16}: {vtype}  (confidence: {conf})")
+    if cls.get("extraction_notes"):
+        lines.append(f"  {'Notes':<16}: {cls['extraction_notes']}")
+    console.print("\n".join(lines) if lines else "  (no fields extracted)")
+
+
+def _prompt_classification_overrides(cls: dict) -> dict:
+    """
+    Interactive field-by-field editor for an LLM classification dict.
+
+    Each field is shown with its current value; pressing Enter keeps it.
+    Lists are entered as comma-separated strings.  Returns the edited dict.
+    """
+    result = dict(cls)
+
+    console.print(
+        "\n[bold]Edit fields[/bold] [dim](Enter = keep current value, type to override)[/dim]"
+    )
+
+    for key, label in _CLS_STRING_FIELDS:
+        current = result.get(key) or ""
+        prompt_label = f"  {label}"
+        # Show current value in brackets so the user can see it without retyping
+        display = f"[{current}]" if current else "[empty]"
+        console.print(f"{prompt_label} {display}")
+        new_val = click.prompt(f"  → {label}", default=current, show_default=False)
+        result[key] = new_val.strip() or None
+
+    for key, label in _CLS_LIST_FIELDS:
+        current_list = result.get(key) or []
+        current_str = ", ".join(current_list)
+        display = f"[{current_str}]" if current_str else "[empty]"
+        console.print(f"  {label} {display}")
+        new_str = click.prompt(
+            f"  → {label} (comma-separated)", default=current_str, show_default=False
+        )
+        result[key] = [x.strip() for x in new_str.split(",") if x.strip()]
+
+    # is_original_composition: three-state bool
+    is_orig = result.get("is_original_composition")
+    current_bool = "y" if is_orig is True else ("n" if is_orig is False else "?")
+    console.print(f"  Is original composition [{current_bool}]")
+    raw = click.prompt("  → Is original composition? (y/n/?)", default=current_bool)
+    raw = raw.strip().lower()
+    result["is_original_composition"] = True if raw == "y" else (False if raw == "n" else None)
+
+    console.print()
+    console.print("[bold]Edited classification:[/bold]")
+    _print_classification_summary(result)
+    console.print()
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # resolve wizards
 # ---------------------------------------------------------------------------
 
@@ -529,21 +619,21 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
             console.print("[dim]Quit.[/dim]")
 
     elif llm_cls:
-        console.print("[yellow]LLM found no TouhouDB match. Extracted:[/yellow]")
-        console.print(f"  Title    : {llm_cls.get('song_title', '?')}")
-        console.print(f"  Circle   : {llm_cls.get('circle_name', '?')}")
-        if llm_cls.get("arranger_names"):
-            console.print(f"  Arrangers: {', '.join(llm_cls['arranger_names'])}")
+        console.print("[yellow]LLM found no TouhouDB match.[/yellow]")
+        _print_classification_summary(llm_cls)
         console.print()
-        console.print("[1] Accept LLM data → insert minimal song stub (no TouhouDB linkage)")
-        console.print("[2] Enter a TouhouDB song ID to ingest from")
+        console.print("[1] Edit fields → insert song stub (no TouhouDB linkage)")
+        console.print("[2] Accept as-is → insert song stub")
+        console.print("[3] Enter a TouhouDB song ID to ingest from")
         console.print("[D] Dismiss")
         console.print("[Q] Quit")
         choice = click.prompt("Choice", default="D").strip().upper()
 
-        if choice == "1":
+        if choice in ("1", "2"):
+            if choice == "1":
+                llm_cls = _prompt_classification_overrides(llm_cls)
             await _do_ingest_stub(task_id, data, video, llm_cls)
-        elif choice == "2":
+        elif choice == "3":
             tdb_id = click.prompt("TouhouDB song ID", type=int)
             await _do_ingest_single(task_id, data, video, tdb_id)
         elif choice == "D":
@@ -1008,7 +1098,7 @@ async def _run_enrich(
     from lotad.db.models import youtube_videos as yt_table
     from lotad.ingestion.pipeline import IngestPipeline
     from lotad.ingestion.touhoudb_client import TouhouDBClient
-    from lotad.ingestion.youtube_client import PlaylistItem
+    from lotad.ingestion.youtube_client import PlaylistItem, YouTubeClient
 
     settings = get_settings()
     engine = get_engine()
@@ -1037,8 +1127,10 @@ async def _run_enrich(
     awaiting_review = 0
     unmatched = 0
 
+    yt_client = YouTubeClient(settings)
+
     async with TouhouDBClient.from_settings(settings) as tdb:
-        extractor = LLMExtractor(settings=settings, tdb_client=tdb)
+        extractor = LLMExtractor(settings=settings, tdb_client=tdb, youtube_client=yt_client)
 
         for i, task_row in enumerate(task_rows, 1):
             tid = task_row["id"]
@@ -1083,6 +1175,7 @@ async def _run_enrich(
                         channel_name=video_row.get("channel_name"),
                         is_album_hint=data.get("is_album", False),
                         conn=match_conn,
+                        youtube_video_id=video_row.get("video_id"),
                     )
             except Exception as exc:
                 console.print(f"[{i}/{total}] #{tid}  {short_title!r}  — [red]error: {exc}[/red]")
