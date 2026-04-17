@@ -638,11 +638,16 @@ class LLMExtractor:
         # 2. TouhouDB artist search fallback
         try:
             results = await self._tdb.search_artists(circle_name, max_results=3)
-        except Exception:
-            logger.debug("TouhouDB artist search failed for %r", circle_name)
+        except Exception as exc:
+            logger.warning(
+                "TouhouDB artist search failed for %r: %s — proceeding without artist_id filter",
+                circle_name,
+                exc,
+            )
             return None
 
         if not results:
+            logger.debug("TouhouDB artist search returned no results for %r", circle_name)
             return None
 
         # Pick the result whose name is most similar to the query
@@ -652,8 +657,21 @@ class LLMExtractor:
         )
         sim = _fuzzy_similarity(circle_name, best.name)
         if sim < 0.6:
+            logger.debug(
+                "Best TouhouDB artist match for %r is %r (sim=%.2f < 0.6) — skipping",
+                circle_name,
+                best.name,
+                sim,
+            )
             return None  # Not confident enough to use
 
+        logger.debug(
+            "TouhouDB artist search: %r → id=%d %r (sim=%.2f)",
+            circle_name,
+            best.id,
+            best.name,
+            sim,
+        )
         return best.id
 
     async def find_match(
@@ -693,6 +711,11 @@ class LLMExtractor:
                     "Resolved circle %r → TouhouDB artist_id=%d",
                     classification.circle_name,
                     artist_id,
+                )
+            else:
+                logger.warning(
+                    "Could not resolve artist_id for circle %r — will search by title only",
+                    classification.circle_name,
                 )
 
         vtype = classification.video_type

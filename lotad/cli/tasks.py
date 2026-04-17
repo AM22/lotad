@@ -690,9 +690,9 @@ async def _do_ingest_single(task_id: int, data: dict, video_row: Any, touhoudb_i
 
     settings = get_settings()
     async with IngestPipeline(settings) as pipeline:
-        ok = await pipeline.ingest_single_video(
+        ok = await pipeline.ingest_video(
             item,
-            playlist_db_id,
+            playlist_db_id=playlist_db_id,
             bulk_match={item.video_id: touhoudb_id},
         )
 
@@ -749,8 +749,8 @@ async def _do_ingest_composite(
                 position=0,
                 is_available=True,
             )
-            ok = await pipeline.ingest_single_video(
-                item, playlist_db_id, bulk_match={item.video_id: tdb_id}
+            ok = await pipeline.ingest_video(
+                item, playlist_db_id=playlist_db_id, bulk_match={item.video_id: tdb_id}
             )
             status_str = "[green]✓[/green]" if ok else "[red]✗[/red]"
             console.print(f"  {status_str} TouhouDB #{tdb_id}")
@@ -1104,7 +1104,7 @@ async def _run_enrich(
 ) -> None:
     import sqlalchemy as sa
 
-    from lotad.agents.llm_extractor import LLMExtractor
+    from lotad.agents.llm_extractor import LLMExtractor, VideoType
     from lotad.config import get_settings
     from lotad.db.models import youtube_videos as yt_table
     from lotad.ingestion.pipeline import IngestPipeline
@@ -1204,8 +1204,9 @@ async def _run_enrich(
             with engine.begin() as conn:
                 manager.merge_task_data(conn, tid, extra)
 
-            # Auto-ingest HIGH confidence single matches
-            if conf == "HIGH" and result.best_match:
+            # Auto-ingest HIGH confidence single_song matches only
+            # (albums and composites require manual review to avoid bulk mistakes)
+            if conf == "HIGH" and result.best_match and result.video_type == VideoType.SINGLE_SONG:
                 playlist_db_id = data.get("playlist_db_id")
                 if playlist_db_id:
                     item = PlaylistItem(
@@ -1221,9 +1222,9 @@ async def _run_enrich(
                     ok = False
                     try:
                         async with IngestPipeline(settings) as pipeline:
-                            ok = await pipeline.ingest_single_video(
+                            ok = await pipeline.ingest_video(
                                 item,
-                                playlist_db_id,
+                                playlist_db_id=playlist_db_id,
                                 bulk_match={item.video_id: tdb_id},
                             )
                     except Exception as exc:
