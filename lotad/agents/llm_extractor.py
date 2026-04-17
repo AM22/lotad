@@ -324,19 +324,40 @@ def _best_title_score(candidate: SongDetail, query_title: str) -> float:
 
 def _artist_string_score(candidate: SongDetail, circle_name: str) -> float:
     """
-    Substring / fuzzy match between circle_name and candidate.artistString.
+    Match circle_name against album artistStrings (primary) and song artistString (fallback).
 
-    artistString is always populated (e.g. "Shibayan feat. itori") and is
-    the most reliable way to get circle info from a SongDetail without
-    traversing albums.
+    The song-level artistString is "Arranger feat. Vocalist" — it does not contain
+    the circle name. Album artistStrings (e.g. "ShibayanRecords feat. various") carry
+    the circle name in both romanized and Japanese forms and are the correct source.
+
+    Normalises away spaces before substring checks so "Shibayan Records" matches
+    "ShibayanRecords" (common TouhouDB style for circle names in album credits).
     """
-    as_lower = candidate.artistString.lower()
     cn_lower = circle_name.lower().strip()
-    # Exact substring is a very strong signal
-    if cn_lower in as_lower:
-        return 1.0
-    # Fuzzy fallback
-    return _fuzzy_similarity(circle_name, candidate.artistString)
+    cn_nospace = cn_lower.replace(" ", "")
+
+    def _score_one(artist_string: str) -> float:
+        if not artist_string:
+            return 0.0
+        as_lower = artist_string.lower()
+        # Exact substring (with or without spaces) is a very strong signal
+        if cn_lower in as_lower or cn_nospace in as_lower.replace(" ", ""):
+            return 1.0
+        return _fuzzy_similarity(circle_name, artist_string)
+
+    # Primary: album-level artistStrings (contain the circle name)
+    album_scores = [
+        _score_one(album.artistString) for album in candidate.albums if album.artistString
+    ]
+    if album_scores:
+        best_album = max(album_scores)
+        if best_album >= 1.0:
+            return 1.0
+        # Fallback: song-level artistString (arranger feat. vocalist — weaker signal)
+        return max(best_album, _score_one(candidate.artistString))
+
+    # No album data — fall back to song-level only
+    return _score_one(candidate.artistString)
 
 
 def _duration_score(candidate_seconds: int | None, video_seconds: int | None) -> float:
@@ -389,8 +410,7 @@ def _score_song_candidate(
 
     circle_q = classification.circle_name or ""
     if confirmed_artist_id is not None and any(
-        a.artist is not None and a.artist.id == confirmed_artist_id
-        for a in candidate.artists
+        a.artist is not None and a.artist.id == confirmed_artist_id for a in candidate.artists
     ):
         # Artist was confirmed via ID-based API filter — no string comparison needed
         breakdown["circle"] = 1.0
