@@ -364,6 +364,8 @@ def _score_song_candidate(
     candidate: SongDetail,
     classification: VideoClassification,
     video_duration: int | None,
+    *,
+    confirmed_artist_id: int | None = None,
 ) -> tuple[float, dict[str, float]]:
     """
     Score a SongDetail against VideoClassification extracted terms.
@@ -374,6 +376,11 @@ def _score_song_candidate(
       circle     0.25
       album      0.20
       duration   0.20
+
+    If *confirmed_artist_id* is provided (meaning the search was already filtered
+    by this TouhouDB artist ID), and the candidate's artist list contains that ID,
+    the circle score is set to 1.0 — bypassing cross-script string comparison which
+    fails e.g. for "Shibayan Records" vs "しばやん feat. 3L".
     """
     breakdown: dict[str, float] = {}
 
@@ -381,7 +388,14 @@ def _score_song_candidate(
     breakdown["title"] = _best_title_score(candidate, title_q) if title_q else 0.0
 
     circle_q = classification.circle_name or ""
-    breakdown["circle"] = _artist_string_score(candidate, circle_q) if circle_q else 0.0
+    if confirmed_artist_id is not None and any(
+        a.artist is not None and a.artist.id == confirmed_artist_id
+        for a in candidate.artists
+    ):
+        # Artist was confirmed via ID-based API filter — no string comparison needed
+        breakdown["circle"] = 1.0
+    else:
+        breakdown["circle"] = _artist_string_score(candidate, circle_q) if circle_q else 0.0
 
     album_q = classification.album_title or ""
     breakdown["album"] = _album_score(candidate, album_q) if album_q else 0.0
@@ -420,10 +434,14 @@ def _candidates_from_songs(
     songs: list[SongDetail],
     classification: VideoClassification,
     video_duration: int | None,
+    *,
+    confirmed_artist_id: int | None = None,
 ) -> list[CandidateMatch]:
     results = []
     for s in songs:
-        score, breakdown = _score_song_candidate(s, classification, video_duration)
+        score, breakdown = _score_song_candidate(
+            s, classification, video_duration, confirmed_artist_id=confirmed_artist_id
+        )
         results.append(
             CandidateMatch(
                 touhoudb_id=s.id,
@@ -754,7 +772,9 @@ class LLMExtractor:
         else:
             songs = await self._tdb.search_songs(query)
 
-        candidates = _candidates_from_songs(songs, classification, video_duration)
+        candidates = _candidates_from_songs(
+            songs, classification, video_duration, confirmed_artist_id=artist_id
+        )
         best = candidates[0] if candidates else None
         confidence = _confidence_from_score(best.score if best else 0.0)
         breakdown = {}
@@ -763,6 +783,7 @@ class LLMExtractor:
                 next((s for s in songs if s.id == best.touhoudb_id), songs[0]),
                 classification,
                 video_duration,
+                confirmed_artist_id=artist_id,
             )
 
         return MatchResult(
