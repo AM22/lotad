@@ -164,7 +164,7 @@ def tasks_list(task_type: str | None, status_str: str, limit: int) -> None:
                             table,
                             title=title_str,
                             border_style="blue",
-                            subtitle=f"[dim]{unenriched} unenriched — run `lotad tasks enrich --all --limit 100`[/dim]",
+                            subtitle=f"[dim]{unenriched} unenriched — run `lotad tasks enrich --limit 100`[/dim]",
                         )
                     )
                     continue
@@ -1072,16 +1072,27 @@ def _resolve_generic(task_id: int, ctx: dict) -> None:
     "enrich_all",
     is_flag=True,
     default=False,
-    help="Enrich all unenriched INGEST_FAILED tasks.",
+    help="Enrich all unenriched INGEST_FAILED tasks (respects --limit).",
 )
 @click.option("--dry-run", is_flag=True, default=False, help="Print prompt without API calls.")
-@click.option("--limit", default=50, show_default=True, help="Max tasks to process.")
-def tasks_enrich(task_id: int | None, enrich_all: bool, dry_run: bool, limit: int) -> None:
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    show_default=True,
+    help="Max tasks to process. Implies --all when given without --id.",
+)
+def tasks_enrich(task_id: int | None, enrich_all: bool, dry_run: bool, limit: int | None) -> None:
     """Run LLM matching on INGEST_FAILED tasks to find TouhouDB matches."""
+    # --limit alone implies --all (it already caps the scope)
+    if limit is not None and not task_id:
+        enrich_all = True
     if not task_id and not enrich_all:
-        console.print("[yellow]Specify --id ID or --all.[/yellow]")
-        raise click.Abort()
-    asyncio.run(_run_enrich(task_id=task_id, enrich_all=enrich_all, dry_run=dry_run, limit=limit))
+        console.print("[yellow]Specify --id ID, --all, or --limit N.[/yellow]")
+        raise click.Abort() from None
+    asyncio.run(
+        _run_enrich(task_id=task_id, enrich_all=enrich_all, dry_run=dry_run, limit=limit or 50)
+    )
 
 
 async def _run_enrich(
