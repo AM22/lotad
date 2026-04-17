@@ -88,6 +88,10 @@ class AlbumSummary(_Base):
     defaultName: str = ""
     releaseDate: ReleaseDate | None = None
     catalogNumber: str | None = None
+    # Album-level artist string — "Circle, CircleRomanized feat. various"
+    # This is the reliable source for circle name matching (the song-level
+    # artistString is always "Arranger feat. Vocalist", not the circle).
+    artistString: str = ""
 
 
 class SongSummary(_Base):
