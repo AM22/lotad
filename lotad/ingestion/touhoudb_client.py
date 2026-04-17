@@ -30,6 +30,7 @@ from lotad.ingestion.http_client import (
 )
 from lotad.ingestion.touhoudb_models import (
     AlbumDetail,
+    AlbumDetailList,
     ArtistDetail,
     ImportedSongList,
     PartialImportedSongs,
@@ -615,9 +616,8 @@ class TouhouDBClient:
             params["artistId"] = artist_id
 
         data = await self._get("/albums", **params)
-        # /api/albums returns the same paginated wrapper shape as /api/songs
-        items_raw = data.get("items", []) if isinstance(data, dict) else []
-        return [AlbumDetail.model_validate(item) for item in items_raw]
+        page = AlbumDetailList.model_validate(data)
+        return page.items
 
     async def get_normalization_count(
         self,

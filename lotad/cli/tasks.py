@@ -603,7 +603,18 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
         choice = click.prompt("Choice", default="1").strip().upper()
 
         if choice == "1":
-            await _do_ingest_single(task_id, data, video, best["touhoudb_id"])
+            vtype = llm_match.get("video_type")
+            if vtype == "full_album":
+                track_ids = llm_match.get("album_track_touhoudb_ids") or []
+                if track_ids:
+                    await _do_ingest_composite(task_id, data, video, track_ids)
+                else:
+                    console.print(
+                        "[red]No track IDs in LLM match data. "
+                        "Enter song IDs manually via option [3].[/red]"
+                    )
+            else:
+                await _do_ingest_single(task_id, data, video, best["touhoudb_id"])
         elif choice == "2":
             tdb_id = click.prompt("TouhouDB song ID", type=int)
             await _do_ingest_single(task_id, data, video, tdb_id)
@@ -1232,7 +1243,24 @@ async def _run_enrich(
 
                     if ok:
                         with engine.begin() as conn:
-                            manager.resolve_ingest_failed(conn, tid, song_id=tdb_id)
+                            from lotad.db.models import playlist_songs as ps_table
+
+                            yt_db_id = conn.execute(
+                                sa.select(yt_table.c.id).where(yt_table.c.video_id == item.video_id)
+                            ).scalar_one_or_none()
+                            db_song_id = None
+                            if yt_db_id:
+                                db_song_id = conn.execute(
+                                    sa.select(ps_table.c.song_id)
+                                    .where(
+                                        sa.and_(
+                                            ps_table.c.youtube_video_id == yt_db_id,
+                                            ps_table.c.removed_at.is_(None),
+                                        )
+                                    )
+                                    .limit(1)
+                                ).scalar_one_or_none()
+                            manager.resolve_ingest_failed(conn, tid, song_id=db_song_id or tdb_id)
                         console.print(
                             f"[{i}/{total}] #{tid}  {short_title!r}  "
                             f"[{conf_color}]{conf}[/{conf_color}]  "
