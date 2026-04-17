@@ -14,6 +14,7 @@ from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import Connection
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from lotad.db.models import (
@@ -176,7 +177,7 @@ def merge_task_data(
     Also sets llm_enriched_at=now() when LLM results are present.
     """
     extra_values: dict[str, Any] = {
-        "data": tasks.c.data.op("||")(sa.cast(extra_data, sa.JSON)),
+        "data": sa.cast(tasks.c.data, JSONB).op("||")(sa.cast(extra_data, JSONB)),
     }
     if "llm_match" in extra_data or "llm_classification" in extra_data:
         extra_values["llm_enriched_at"] = datetime.now(UTC)
