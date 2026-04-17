@@ -55,7 +55,10 @@ _CHAIN_FIELDS = "Artists,Albums,Tags,PVs,WebLinks,AdditionalNames"
 # Fields requested for album detail (includes Tracks)
 _ALBUM_FIELDS = "Artists,Tags,Tracks,AdditionalNames,Description,ReleaseEvent"
 # Fields requested for artist detail
-_ARTIST_FIELDS = "Groups,Tags"
+# Valid ArtistOptionalField values: AdditionalNames, ArtistLinks, ArtistLinksReverse,
+# BaseVoicebank, Description, MainPicture, Names, Tags, WebLinks
+# ("Groups" is NOT a valid field — use ArtistLinks for group membership if needed)
+_ARTIST_FIELDS = "AdditionalNames,Tags"
 
 # Matches any touhoudb.com/S/<id> URL (http or https, with or without trailing slash)
 _TOUHOUDB_SONG_RE = re.compile(r"touhoudb\.com/S/(\d+)", re.IGNORECASE)
@@ -570,6 +573,8 @@ class TouhouDBClient:
         ``artistId`` + ``artistParticipationStatus=Everything`` params).
         Note: ``artistName`` text filter is NOT supported by TouhouDB (returns 400).
         """
+        # Valid SongSortRule values: Name, AdditionDate, FavoritedTimes, PublishDate,
+        # RatingScore, TagUsageCount, SongType  ("SongInAlbum" is NOT valid)
         params: dict[str, Any] = {
             "query": query,
             "nameMatchMode": "Words",
@@ -577,7 +582,7 @@ class TouhouDBClient:
             "lang": "Default",
             "maxResults": max_results,
             "getTotalCount": "false",
-            "sort": "SongInAlbum",
+            "sort": "FavoritedTimes",
         }
         if artist_id is not None:
             params["artistId"] = artist_id
