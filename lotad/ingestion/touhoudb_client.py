@@ -556,7 +556,6 @@ class TouhouDBClient:
         query: str,
         *,
         artist_id: int | None = None,
-        artist_name: str | None = None,
         max_results: int = 10,
     ) -> list[SongDetail]:
         """
@@ -566,10 +565,9 @@ class TouhouDBClient:
         words in *query* are matched independently (not as a phrase).  Returns
         full ``SongDetail`` objects with Artists, Albums, Tags, and PVs.
 
-        Filtering priority:
-          1. *artist_id* — exact TouhouDB artist ID (most precise, preferred).
-          2. *artist_name* — text filter; less precise, kept as fallback.
-        Pass at most one; if both provided *artist_id* takes precedence.
+        Pass *artist_id* to filter by a specific TouhouDB artist (uses the
+        ``artistId`` + ``artistParticipationStatus=Everything`` params).
+        Note: ``artistName`` text filter is NOT supported by TouhouDB (returns 400).
         """
         params: dict[str, Any] = {
             "query": query,
@@ -583,9 +581,6 @@ class TouhouDBClient:
         if artist_id is not None:
             params["artistId"] = artist_id
             params["artistParticipationStatus"] = "Everything"
-        elif artist_name:
-            params["artistName"] = artist_name
-            params["artistParticipationStatus"] = "Everything"
 
         data = await self._get("/songs", **params)
         page = SongDetailList.model_validate(data)
@@ -596,7 +591,6 @@ class TouhouDBClient:
         query: str,
         *,
         artist_id: int | None = None,
-        artist_name: str | None = None,
         max_results: int = 5,
     ) -> list[AlbumDetail]:
         """
@@ -606,7 +600,8 @@ class TouhouDBClient:
         ``AlbumDetail`` objects including Tracks so the caller can iterate
         track TouhouDB IDs for composite ingestion.
 
-        Filtering priority: *artist_id* (exact) > *artist_name* (text).
+        Pass *artist_id* to filter by a specific TouhouDB artist.
+        Note: ``artistName`` text filter is NOT supported by TouhouDB (returns 400).
         """
         params: dict[str, Any] = {
             "query": query,
@@ -618,8 +613,6 @@ class TouhouDBClient:
         }
         if artist_id is not None:
             params["artistId"] = artist_id
-        elif artist_name:
-            params["artistName"] = artist_name
 
         data = await self._get("/albums", **params)
         # /api/albums returns the same paginated wrapper shape as /api/songs

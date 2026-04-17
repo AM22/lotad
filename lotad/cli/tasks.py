@@ -689,7 +689,7 @@ async def _do_ingest_single(task_id: int, data: dict, video_row: Any, touhoudb_i
     )
 
     settings = get_settings()
-    async with IngestPipeline.from_settings(settings) as pipeline:
+    async with IngestPipeline(settings) as pipeline:
         ok = await pipeline.ingest_single_video(
             item,
             playlist_db_id,
@@ -738,7 +738,7 @@ async def _do_ingest_composite(
     console.print(f"\nIngesting {len(touhoudb_ids)} tracks from composite video...")
     settings = get_settings()
     success_count = 0
-    async with IngestPipeline.from_settings(settings) as pipeline:
+    async with IngestPipeline(settings) as pipeline:
         for tdb_id in touhoudb_ids:
             item = PlaylistItem(
                 video_id=video_row["video_id"],
@@ -1220,7 +1220,7 @@ async def _run_enrich(
                     tdb_id = result.best_match.touhoudb_id
                     ok = False
                     try:
-                        async with IngestPipeline.from_settings(settings) as pipeline:
+                        async with IngestPipeline(settings) as pipeline:
                             ok = await pipeline.ingest_single_video(
                                 item,
                                 playlist_db_id,

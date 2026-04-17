@@ -719,18 +719,14 @@ class LLMExtractor:
                 classification=classification,
             )
 
-        # Prefer artist_id filter (exact); fall back to artistName text filter;
-        # final fallback is query-only.
+        # Prefer artist_id filter (exact, supported by TouhouDB);
+        # artistName text filter is NOT supported (returns 400), so fall
+        # straight through to query-only when no artist_id is available.
         if artist_id is not None:
             songs = await self._tdb.search_songs(query, artist_id=artist_id)
             if not songs:
                 # artist_id filter may be too narrow (e.g. circle ≠ primary artist);
                 # retry without filter
-                songs = await self._tdb.search_songs(query)
-        elif classification.circle_name:
-            songs = await self._tdb.search_songs(query, artist_name=classification.circle_name)
-            # Fallback: if artist_name filter returned nothing, try without
-            if not songs:
                 songs = await self._tdb.search_songs(query)
         else:
             songs = await self._tdb.search_songs(query)
@@ -769,10 +765,6 @@ class LLMExtractor:
 
         if artist_id is not None:
             albums: list[AlbumDetail] = await self._tdb.search_albums(query, artist_id=artist_id)
-            if not albums:
-                albums = await self._tdb.search_albums(query)
-        elif classification.circle_name:
-            albums = await self._tdb.search_albums(query, artist_name=classification.circle_name)
             if not albums:
                 albums = await self._tdb.search_albums(query)
         else:
