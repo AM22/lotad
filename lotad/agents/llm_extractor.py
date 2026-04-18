@@ -153,7 +153,21 @@ Many descriptions are structured like:
   Original: ...
   Source: ...
 
-Extract all available fields. Leave fields null/empty when genuinely unknown — do not guess. 
+Extract all available fields. Leave fields null/empty when genuinely unknown — do not guess.
+
+## circle_name rules
+
+Most Touhou music on YouTube is uploaded by **fans and reuploaders**, not by the circle itself.
+The channel name is therefore almost never the circle name.
+
+- **DO** extract circle_name from the title or description when it is explicitly stated
+  (e.g. "Circle: Shibayan Records", or a structured description field labelled "Circle:").
+- **DO** use the channel name as circle_name if `公式` (official) appears in the title or
+  description AND the channel name looks like a circle/group name (not a personal name or
+  generic uploader like "TOHO MUSIC CHANNEL").
+- **DO NOT** use the channel name as circle_name by default or as a fallback.
+- **When in doubt, leave circle_name null.** A null circle is handled gracefully downstream;
+  a wrong circle actively breaks artist-filtered search.
 
 Description may signal composite videos even if the title format looks like a single song. Presence of timestamps signals that the song could be (but is not guaranteed to be) a composite.
 Example composite description:
