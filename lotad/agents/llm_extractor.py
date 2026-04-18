@@ -794,9 +794,14 @@ class LLMExtractor:
                         aid,
                     )
                     break
-            if filter_artist_id is None and classification.circle_name:
+            if filter_artist_id is None and (
+                classification.circle_name
+                or classification.arranger_names
+                or classification.vocalist_names
+            ):
                 logger.warning(
-                    "Could not resolve any artist_id — searching by title only",
+                    "Could not resolve any artist_id from circle/arrangers/vocalists"
+                    " — searching by title only",
                 )
 
         vtype = classification.video_type
