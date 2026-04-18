@@ -740,38 +740,84 @@ class LLMExtractor:
             youtube_video_id=youtube_video_id,
         )
 
-        # Pre-resolve artist ID — used by all search paths
-        artist_id: int | None = None
+        # --- Artist ID resolution ------------------------------------------------
+        # Priority: circle → arranger(s) → vocalist(s)
+        #
+        # confirmed_circle_id: only set when we successfully resolved the circle.
+        #   Used to award full circle-score credit in scoring (ID-confirmed match).
+        #
+        # filter_artist_id: the best ID we have for the TouhouDB artistId filter.
+        #   May be circle, arranger, or vocalist — whichever resolved first.
+        #   NOT used for circle score credit when it comes from arranger/vocalist.
+        confirmed_circle_id: int | None = None
+        filter_artist_id: int | None = None
+
         if classification.circle_name:
-            artist_id = await self._resolve_artist_id(classification.circle_name, conn)
-            if artist_id:
+            confirmed_circle_id = await self._resolve_artist_id(classification.circle_name, conn)
+            if confirmed_circle_id:
+                filter_artist_id = confirmed_circle_id
                 logger.debug(
                     "Resolved circle %r → TouhouDB artist_id=%d",
                     classification.circle_name,
-                    artist_id,
+                    confirmed_circle_id,
                 )
             else:
                 logger.warning(
-                    "Could not resolve artist_id for circle %r — will search by title only",
+                    "Could not resolve artist_id for circle %r — trying arrangers/vocalists",
                     classification.circle_name,
+                )
+
+        # Fallback: try arrangers then vocalists so we still get a useful search
+        # filter even when the circle is unknown or unresolvable.
+        if filter_artist_id is None:
+            for name in list(classification.arranger_names) + list(classification.vocalist_names):
+                aid = await self._resolve_artist_id(name, conn)
+                if aid:
+                    filter_artist_id = aid
+                    logger.debug(
+                        "Resolved fallback artist %r → TouhouDB artist_id=%d (not circle)",
+                        name,
+                        aid,
+                    )
+                    break
+            if filter_artist_id is None and classification.circle_name:
+                logger.warning(
+                    "Could not resolve any artist_id — searching by title only",
                 )
 
         vtype = classification.video_type
 
         if vtype == VideoType.FULL_ALBUM:
-            return await self._match_full_album(classification, duration_seconds, artist_id)
+            return await self._match_full_album(classification, duration_seconds, filter_artist_id)
         elif vtype == VideoType.COMPOSITE_TRACKS:
-            return await self._match_composite(classification, duration_seconds, artist_id)
+            return await self._match_composite(
+                classification,
+                duration_seconds,
+                filter_artist_id=filter_artist_id,
+                confirmed_circle_id=confirmed_circle_id,
+            )
         else:
-            return await self._match_single_song(classification, duration_seconds, artist_id)
+            return await self._match_single_song(
+                classification,
+                duration_seconds,
+                filter_artist_id=filter_artist_id,
+                confirmed_circle_id=confirmed_circle_id,
+            )
 
     async def _match_single_song(
         self,
         classification: VideoClassification,
         video_duration: int | None,
-        artist_id: int | None = None,
+        filter_artist_id: int | None = None,
+        confirmed_circle_id: int | None = None,
     ) -> MatchResult:
-        """Search and score for a single-song video."""
+        """Search and score for a single-song video.
+
+        filter_artist_id: TouhouDB artistId to use as search filter — may be a
+            circle, arranger, or vocalist ID depending on what resolved.
+        confirmed_circle_id: only set when we confirmed the *circle* specifically;
+            used to award full circle-score credit in scoring.
+        """
         query = classification.song_title or ""
         if not query:
             return MatchResult(
@@ -780,20 +826,17 @@ class LLMExtractor:
                 classification=classification,
             )
 
-        # Prefer artist_id filter (exact, supported by TouhouDB);
-        # artistName text filter is NOT supported (returns 400), so fall
-        # straight through to query-only when no artist_id is available.
-        if artist_id is not None:
-            songs = await self._tdb.search_songs(query, artist_id=artist_id)
+        # Prefer artist_id filter (exact, supported by TouhouDB).
+        if filter_artist_id is not None:
+            songs = await self._tdb.search_songs(query, artist_id=filter_artist_id)
             if not songs:
-                # artist_id filter may be too narrow (e.g. circle ≠ primary artist);
-                # retry without filter
+                # Filter may be too narrow — retry without to avoid missing the song
                 songs = await self._tdb.search_songs(query)
         else:
             songs = await self._tdb.search_songs(query)
 
         candidates = _candidates_from_songs(
-            songs, classification, video_duration, confirmed_artist_id=artist_id
+            songs, classification, video_duration, confirmed_artist_id=confirmed_circle_id
         )
         best = candidates[0] if candidates else None
         confidence = _confidence_from_score(best.score if best else 0.0)
@@ -803,7 +846,7 @@ class LLMExtractor:
                 next((s for s in songs if s.id == best.touhoudb_id), songs[0]),
                 classification,
                 video_duration,
-                confirmed_artist_id=artist_id,
+                confirmed_artist_id=confirmed_circle_id,
             )
 
         return MatchResult(
@@ -819,16 +862,20 @@ class LLMExtractor:
         self,
         classification: VideoClassification,
         video_duration: int | None,
-        artist_id: int | None = None,
+        filter_artist_id: int | None = None,
     ) -> MatchResult:
         """Search TouhouDB for an album and return all track IDs."""
         query = classification.album_title or ""
         if not query:
             # No album title extracted; fall back to song-level search
-            return await self._match_single_song(classification, video_duration, artist_id)
+            return await self._match_single_song(
+                classification, video_duration, filter_artist_id=filter_artist_id
+            )
 
-        if artist_id is not None:
-            albums: list[AlbumDetail] = await self._tdb.search_albums(query, artist_id=artist_id)
+        if filter_artist_id is not None:
+            albums: list[AlbumDetail] = await self._tdb.search_albums(
+                query, artist_id=filter_artist_id
+            )
             if not albums:
                 albums = await self._tdb.search_albums(query)
         else:
@@ -878,7 +925,8 @@ class LLMExtractor:
         self,
         classification: VideoClassification,
         video_duration: int | None,
-        artist_id: int | None = None,
+        filter_artist_id: int | None = None,
+        confirmed_circle_id: int | None = None,
     ) -> MatchResult:
         """Match each track in a composite video independently."""
         track_results: list[MatchResult] = []
@@ -892,7 +940,10 @@ class LLMExtractor:
                 album_title=classification.album_title,
             )
             result = await self._match_single_song(
-                per_track_cls, video_duration=None, artist_id=artist_id
+                per_track_cls,
+                video_duration=None,
+                filter_artist_id=filter_artist_id,
+                confirmed_circle_id=confirmed_circle_id,
             )
             track_results.append(result)
 
