@@ -1200,7 +1200,10 @@ async def _run_enrich(
                         youtube_video_id=video_row.get("video_id"),
                     )
             except Exception as exc:
-                console.print(f"[{i}/{total}] #{tid}  {short_title!r}  — [red]error: {exc}[/red]")
+                console.print(
+                    f"[{i}/{total}] #{tid}  {short_title!r}  "
+                    f"— [red]error: {type(exc).__name__}: {exc}[/red]"
+                )
                 continue
 
             conf = result.confidence
