@@ -373,8 +373,14 @@ def _normalize_search_title(title: str) -> str:
         # Remove any parenthetical whose content is entirely ASCII (translation)
         result = re.sub(r"\([^)]*\)", lambda m: "" if m.group(0).isascii() else m.group(0), result)
 
-    # Collapse extra whitespace left by the removals
-    return re.sub(r"\s+", " ", result).strip()
+    # 3. Strip ASCII punctuation for more lenient matching.
+    #    Preserves spaces and all non-ASCII characters (CJK, Japanese kana/punct like ☆ ・ ～).
+    #    Handles cases like "Jump !" vs "Jump!" or "MELO☆MELO MELTDOWN!!" vs "MELO☆MELO MELTDOWN !!".
+    stripped = re.sub(r"[\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]", " ", result)
+
+    # Collapse extra whitespace left by the removals; fall back to pre-strip value if empty
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped if stripped else re.sub(r"\s+", " ", result).strip()
 
 
 def _fuzzy_similarity(a: str, b: str) -> float:
@@ -637,14 +643,24 @@ class LLMExtractor:
                 reason,
             )
 
-            # Fetch comments (best-effort — empty string if unavailable)
+            # Fetch comments (best-effort — empty string if unavailable/timeout)
             comments_text = ""
             if self._yt is not None and youtube_video_id is not None:
-                comments = await asyncio.to_thread(
-                    self._yt.get_video_comments,
-                    youtube_video_id,
-                    max_results=15,
-                )
+                try:
+                    comments = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._yt.get_video_comments,
+                            youtube_video_id,
+                            max_results=15,
+                        ),
+                        timeout=15.0,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "YouTube comments fetch timed out for %r — continuing without",
+                        youtube_video_id,
+                    )
+                    comments = []
                 if comments:
                     comments_text = "Top YouTube comments:\n" + "\n---\n".join(comments)
                     logger.debug("Fetched %d comments for %s", len(comments), youtube_video_id)
@@ -821,16 +837,19 @@ class LLMExtractor:
         )
 
         # --- Artist ID resolution ------------------------------------------------
-        # Priority: circle → arranger(s) → vocalist(s)
-        #
         # confirmed_circle_id: only set when we successfully resolved the circle.
         #   Used to award full circle-score credit in scoring (ID-confirmed match).
         #
-        # filter_artist_id: the best ID we have for the TouhouDB artistId filter.
-        #   May be circle, arranger, or vocalist — whichever resolved first.
-        #   NOT used for circle score credit when it comes from arranger/vocalist.
+        # filter_artist_id: primary TouhouDB artistId filter for the search.
+        #
+        # additional_filter_ids: ordered fallbacks tried when filter_artist_id returns
+        #   no results.  Always populated from arrangers/vocalists (up to 2 arrangers +
+        #   1 vocalist) so that songs credited under a different artist than the circle
+        #   (e.g. Memories by 暁Records, which TouhouDB doesn't return under the circle
+        #   filter but does return under the arranger filter) can still be found.
         confirmed_circle_id: int | None = None
         filter_artist_id: int | None = None
+        additional_filter_ids: list[int] = []
 
         if classification.circle_name:
             confirmed_circle_id = await self._resolve_artist_id(classification.circle_name, conn)
@@ -847,28 +866,33 @@ class LLMExtractor:
                     classification.circle_name,
                 )
 
-        # Fallback: try arrangers then vocalists so we still get a useful search
-        # filter even when the circle is unknown or unresolvable.
-        if filter_artist_id is None:
-            for name in list(classification.arranger_names) + list(classification.vocalist_names):
-                aid = await self._resolve_artist_id(name, conn)
-                if aid:
-                    filter_artist_id = aid
-                    logger.debug(
-                        "Resolved fallback artist %r → TouhouDB artist_id=%d (not circle)",
-                        name,
-                        aid,
-                    )
-                    break
-            if filter_artist_id is None and (
-                classification.circle_name
-                or classification.arranger_names
-                or classification.vocalist_names
-            ):
-                logger.warning(
-                    "Could not resolve any artist_id from circle/arrangers/vocalists"
-                    " — searching by title only",
-                )
+        # Always resolve arranger/vocalist IDs (cap: first 2 arrangers + first vocalist).
+        # These serve as:
+        #   (a) primary filter when circle is unknown/unresolvable
+        #   (b) ordered fallbacks when circle filter returns no results (TouhouDB crediting gap)
+        candidate_names = (
+            list(classification.arranger_names)[:2] + list(classification.vocalist_names)[:1]
+        )
+        for name in candidate_names:
+            aid = await self._resolve_artist_id(name, conn)
+            if aid and aid != filter_artist_id and aid not in additional_filter_ids:
+                additional_filter_ids.append(aid)
+                logger.debug("Resolved artist %r → TouhouDB artist_id=%d", name, aid)
+
+        # If circle didn't resolve, promote first additional to primary filter
+        if filter_artist_id is None and additional_filter_ids:
+            filter_artist_id = additional_filter_ids.pop(0)
+            logger.debug("Using arranger/vocalist artist_id=%d as primary filter", filter_artist_id)
+
+        if filter_artist_id is None and (
+            classification.circle_name
+            or classification.arranger_names
+            or classification.vocalist_names
+        ):
+            logger.warning(
+                "Could not resolve any artist_id from circle/arrangers/vocalists"
+                " — searching by title only",
+            )
 
         vtype = classification.video_type
 
@@ -880,6 +904,7 @@ class LLMExtractor:
                 duration_seconds,
                 filter_artist_id=filter_artist_id,
                 confirmed_circle_id=confirmed_circle_id,
+                additional_filter_ids=additional_filter_ids,
             )
         else:
             return await self._match_single_song(
@@ -887,6 +912,7 @@ class LLMExtractor:
                 duration_seconds,
                 filter_artist_id=filter_artist_id,
                 confirmed_circle_id=confirmed_circle_id,
+                additional_filter_ids=additional_filter_ids,
             )
 
     async def _match_single_song(
@@ -895,13 +921,15 @@ class LLMExtractor:
         video_duration: int | None,
         filter_artist_id: int | None = None,
         confirmed_circle_id: int | None = None,
+        additional_filter_ids: list[int] | None = None,
     ) -> MatchResult:
         """Search and score for a single-song video.
 
-        filter_artist_id: TouhouDB artistId to use as search filter — may be a
-            circle, arranger, or vocalist ID depending on what resolved.
-        confirmed_circle_id: only set when we confirmed the *circle* specifically;
-            used to award full circle-score credit in scoring.
+        filter_artist_id: primary TouhouDB artistId filter for the search.
+        confirmed_circle_id: only set when the *circle* was resolved; awards full
+            circle-score credit in scoring.
+        additional_filter_ids: fallback artist IDs tried in order when the primary
+            filter returns no results, before falling back to title-only search.
         """
         query = _normalize_search_title(classification.song_title or "")
         if not query:
@@ -911,11 +939,21 @@ class LLMExtractor:
                 classification=classification,
             )
 
-        # Prefer artist_id filter (exact, supported by TouhouDB).
+        # Search with the primary artist filter, then try each additional fallback ID,
+        # then fall back to title-only if all filtered searches return nothing.
+        songs: list = []
         if filter_artist_id is not None:
             songs = await self._tdb.search_songs(query, artist_id=filter_artist_id)
             if not songs:
-                # Filter may be too narrow — retry without to avoid missing the song
+                for fallback_id in additional_filter_ids or []:
+                    songs = await self._tdb.search_songs(query, artist_id=fallback_id)
+                    if songs:
+                        logger.debug(
+                            "Primary filter returned nothing; fallback artist_id=%d found results",
+                            fallback_id,
+                        )
+                        break
+            if not songs:
                 songs = await self._tdb.search_songs(query)
         else:
             songs = await self._tdb.search_songs(query)
@@ -1012,6 +1050,7 @@ class LLMExtractor:
         video_duration: int | None,
         filter_artist_id: int | None = None,
         confirmed_circle_id: int | None = None,
+        additional_filter_ids: list[int] | None = None,
     ) -> MatchResult:
         """Match each track in a composite video independently."""
         track_results: list[MatchResult] = []
@@ -1029,6 +1068,7 @@ class LLMExtractor:
                 video_duration=None,
                 filter_artist_id=filter_artist_id,
                 confirmed_circle_id=confirmed_circle_id,
+                additional_filter_ids=additional_filter_ids,
             )
             track_results.append(result)
 
