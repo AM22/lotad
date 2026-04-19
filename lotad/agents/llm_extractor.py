@@ -650,6 +650,11 @@ class LLMExtractor:
             # Fetch comments (best-effort — empty string if unavailable/timeout)
             comments_text = ""
             if self._yt is not None and youtube_video_id is not None:
+                logger.info(
+                    "Fetching YouTube comments for %r (%s)",
+                    title,
+                    youtube_video_id,
+                )
                 try:
                     comments = await asyncio.wait_for(
                         asyncio.to_thread(
