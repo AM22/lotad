@@ -314,8 +314,12 @@ _REQUEST_CONTEXT_TOOL: dict = {
         "- Description is empty or contains only a URL/social links\n"
         "- Title has two names with no structural markers (circle vs. vocalist ambiguous)\n"
         "- Video appears to be a medley/mashup but no original song names are visible\n\n"
-        "Do NOT request context if you can already extract useful metadata — comments "
-        "may be equally sparse."
+        "Do NOT request context if:\n"
+        "- The description contains labeled fields such as Circle:, Title:, Vocal:, "
+        "Arrangement:, Album:, Original:, or similar structured metadata — these are "
+        "sufficient to classify the video and extract all needed fields.\n"
+        "- You can already identify the song title, circle, and video type — comments "
+        "are unlikely to add information that isn't already present."
     ),
     "input_schema": {
         "type": "object",
