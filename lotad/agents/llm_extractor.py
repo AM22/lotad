@@ -168,10 +168,10 @@ Use the original title as it appears on the release — **not** a fan-supplied t
   If the video title is `涼風爽夏 (The Cool Breeze of a Fresh Summer)`, extract `涼風爽夏`.
   If you want to record the translation, put it in `extraction_notes`.
 - **DO NOT** include uploader annotations in brackets: `[ENG SUBS]`, `[Subbed]`,
-  `[Drumbeat Version]`, genre tags, etc. These never appear in TouhouDB titles.
+  genre tags, etc. These almost never appear in TouhouDB titles.
 
 When the description contains a structured `Title:` field, prefer that value over the
-YouTube video title (the video title is often edited by the uploader).
+YouTube video title.
 
 ## circle_name rules
 
