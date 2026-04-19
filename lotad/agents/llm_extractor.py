@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import difflib
 import logging
+import re
+import unicodedata
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -154,6 +156,22 @@ Many descriptions are structured like:
   Source: ...
 
 Extract all available fields. Leave fields null/empty when genuinely unknown — do not guess.
+
+## song_title rules
+
+Use the original title as it appears on the release — **not** a fan-supplied translation.
+
+- **DO** extract the Japanese (or native-language) title: `サイアノタイプ`, not `サイアノタイプ (CYANOTYPE)`
+- **DO** keep remix/variant designations that identify a specific version on the release:
+  `MELO☆MELO MELTDOWN!! (Tsukasa Revival Mix)` — this is a distinct track, not a translation
+- **DO NOT** include parenthetical translations or romanizations in `song_title`.
+  If the video title is `涼風爽夏 (The Cool Breeze of a Fresh Summer)`, extract `涼風爽夏`.
+  If you want to record the translation, put it in `extraction_notes`.
+- **DO NOT** include uploader annotations in brackets: `[ENG SUBS]`, `[Subbed]`,
+  `[Drumbeat Version]`, genre tags, etc. These never appear in TouhouDB titles.
+
+When the description contains a structured `Title:` field, prefer that value over the
+YouTube video title (the video title is often edited by the uploader).
 
 ## circle_name rules
 
@@ -319,6 +337,44 @@ _REQUEST_CONTEXT_TOOL: dict = {
 # ---------------------------------------------------------------------------
 # Scoring helpers
 # ---------------------------------------------------------------------------
+
+
+def _has_cjk(s: str) -> bool:
+    """Return True if *s* contains any CJK / Hiragana / Katakana characters."""
+    for ch in s:
+        name = unicodedata.name(ch, "")
+        if name.startswith(("CJK", "HIRAGANA", "KATAKANA")):
+            return True
+    return False
+
+
+def _normalize_search_title(title: str) -> str:
+    """Normalise a song title for use as a TouhouDB search query.
+
+    Two transformations are applied **only to the search query** — the original
+    ``song_title`` is preserved in ``VideoClassification`` for scoring.
+
+    1. Strip square-bracket content entirely.  Square brackets in Touhou YouTube
+       titles are always uploader annotations: ``[ENG SUBS]``, ``[Drumbeat Version]``,
+       ``[Subbed]``, genre tags, etc.  They never appear in TouhouDB song titles.
+
+    2. Strip round-bracket content that looks like a translation.  When the main
+       title contains CJK characters and a parenthetical contains only Latin script,
+       it is almost certainly a fan-supplied translation (e.g. ``サイアノタイプ (CYANOTYPE)``
+       → ``サイアノタイプ``).  When the main title is already Latin the parenthetical
+       is kept because it likely designates a remix/variant that IS on TouhouDB
+       (e.g. ``MELO☆MELO MELTDOWN!! (Tsukasa Revival Mix)`` stays intact).
+    """
+    # 1. Strip all [...] annotations
+    result = re.sub(r"\[.*?\]", "", title)
+
+    # 2. Strip ASCII-only (...) when the surrounding text is CJK
+    if _has_cjk(result):
+        # Remove any parenthetical whose content is entirely ASCII (translation)
+        result = re.sub(r"\([^)]*\)", lambda m: "" if m.group(0).isascii() else m.group(0), result)
+
+    # Collapse extra whitespace left by the removals
+    return re.sub(r"\s+", " ", result).strip()
 
 
 def _fuzzy_similarity(a: str, b: str) -> float:
@@ -702,17 +758,27 @@ class LLMExtractor:
             logger.debug("TouhouDB artist search returned no results for %r", circle_name)
             return None
 
-        # Pick the result whose name is most similar to the query
-        best = max(
-            results,
-            key=lambda a: _fuzzy_similarity(circle_name, a.name),
-        )
-        sim = _fuzzy_similarity(circle_name, best.name)
+        def _artist_name_sim(artist: Any, query: str) -> float:
+            """Max similarity across artist.name and all additionalNames variants."""
+            names = [artist.name]
+            for n in artist.additionalNames.split(","):
+                n = n.strip()
+                if n:
+                    names.append(n)
+            return max(_fuzzy_similarity(query, n) for n in names)
+
+        # Pick the result whose name (or any additional name) is most similar to the query.
+        # Checking additionalNames is essential for circles whose canonical TouhouDB name is
+        # Japanese but the LLM extracted the romanized name (e.g. "Akatsuki Records" →
+        # "暁Records" with additionalNames "Akatsuki Records, Dawn Records").
+        best = max(results, key=lambda a: _artist_name_sim(a, circle_name))
+        sim = _artist_name_sim(best, circle_name)
         if sim < 0.6:
             logger.debug(
-                "Best TouhouDB artist match for %r is %r (sim=%.2f < 0.6) — skipping",
+                "Best TouhouDB artist match for %r is %r (additionalNames=%r, sim=%.2f < 0.6) — skipping",
                 circle_name,
                 best.name,
+                best.additionalNames,
                 sim,
             )
             return None  # Not confident enough to use
@@ -837,7 +903,7 @@ class LLMExtractor:
         confirmed_circle_id: only set when we confirmed the *circle* specifically;
             used to award full circle-score credit in scoring.
         """
-        query = classification.song_title or ""
+        query = _normalize_search_title(classification.song_title or "")
         if not query:
             return MatchResult(
                 video_type=VideoType.SINGLE_SONG,
@@ -884,7 +950,7 @@ class LLMExtractor:
         filter_artist_id: int | None = None,
     ) -> MatchResult:
         """Search TouhouDB for an album and return all track IDs."""
-        query = classification.album_title or ""
+        query = _normalize_search_title(classification.album_title or "")
         if not query:
             # No album title extracted; fall back to song-level search
             return await self._match_single_song(
