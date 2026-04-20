@@ -395,6 +395,7 @@ class IngestPipeline:
 
             # 3.5. Ingest albums this song appears on
             composite = is_album_video(item)
+            composite_song_ids_written: set[int] = set()
             for album_summary in song_detail.albums:
                 try:
                     album_detail = await self._tdb.get_album(album_summary.id)
@@ -427,6 +428,7 @@ class IngestPipeline:
                                 youtube_timestamp_seconds=ts,
                                 conn=conn,
                             )
+                            composite_song_ids_written.add(row.id)
                             if ts is None:
                                 self._create_task(
                                     TaskType.SUSPICIOUS_METADATA,
@@ -473,15 +475,19 @@ class IngestPipeline:
                 song_detail, song_id, yt_video_id, item, conn, is_composite=composite
             )
 
-            # 6. Create playlist_songs row for individual videos.
-            # Composite videos are fully handled in step 3.5 (one row per album
-            # track, with timestamps), so we skip this step for them.
-            if playlist_db_id is not None and not composite:
+            # 6. Create playlist_songs row.
+            # For full-album composite videos, all tracks (including song_id) are
+            # covered by step 3.5. For non-album composites the album track loop
+            # may not have covered song_id — fall back so the entry-point song
+            # always gets a row.
+            if playlist_db_id is not None and (
+                not composite or song_id not in composite_song_ids_written
+            ):
                 self._upsert_playlist_song(
                     song_id=song_id,
                     playlist_db_id=playlist_db_id,
                     yt_video_id=yt_video_id,
-                    source=SourceType.INDIVIDUAL_VIDEO,
+                    source=SourceType.COMPOSITE_VIDEO if composite else SourceType.INDIVIDUAL_VIDEO,
                     conn=conn,
                 )
 
