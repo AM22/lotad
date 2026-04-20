@@ -34,6 +34,7 @@ import sqlalchemy as sa
 from sqlalchemy import Connection
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from lotad.agents.llm_extractor import LLMExtractor, MatchResult, VideoType
 from lotad.config import Settings, get_settings
 from lotad.db.models import (
     SourceType,
@@ -190,6 +191,9 @@ class IngestPipeline:
         self._tdb = TouhouDBClient.from_settings(self._settings)
         await self._tdb.__aenter__()
         self._yt = YouTubeClient(self._settings)
+        self._extractor = LLMExtractor(
+            settings=self._settings, tdb_client=self._tdb, youtube_client=self._yt
+        )
         return self
 
     async def __aexit__(self, *args) -> None:
@@ -442,6 +446,41 @@ class IngestPipeline:
                         "Failed to ingest album touhoudb_id=%d for song %d — skipping",
                         album_summary.id,
                         song_id,
+                    )
+
+            # 3.6. For composite non-album videos, use the LLM extractor to match
+            # each track and populate playlist_songs with per-track timestamps.
+            # Only runs when the LLM classifies the video as COMPOSITE_TRACKS (not
+            # FULL_ALBUM), so full-album videos handled in step 3.5 are unaffected.
+            if composite and playlist_db_id is not None:
+                try:
+                    match_result = await self._extractor.find_match(
+                        title=item.title,
+                        description=item.description or "",
+                        duration_seconds=item.duration_seconds,
+                        channel_name=item.channel_name,
+                        is_album_hint=True,
+                        conn=conn,
+                        youtube_video_id=item.video_id,
+                    )
+                    if match_result.video_type == VideoType.COMPOSITE_TRACKS:
+                        self._upsert_composite_track_songs(
+                            match_result, playlist_db_id, yt_video_id, item.video_id, conn
+                        )
+                        # Update the written-set so step 6 doesn't double-upsert
+                        for tr in match_result.track_results:
+                            if tr.best_match is not None:
+                                row = conn.execute(
+                                    sa.select(songs.c.id).where(
+                                        songs.c.touhoudb_id == tr.best_match.touhoudb_id
+                                    )
+                                ).one_or_none()
+                                if row is not None:
+                                    composite_song_ids_written.add(row.id)
+                except Exception:
+                    logger.exception(
+                        "LLM composite matching failed for video %s — falling back to entry-point only",
+                        item.video_id,
                     )
 
             # 4. Resolve original chain + link
@@ -764,3 +803,73 @@ class IngestPipeline:
                     result[track.song.id] = desc_timestamps[desc_idx][0]
 
         return result
+
+    def _upsert_composite_track_songs(
+        self,
+        match_result: MatchResult,
+        playlist_db_id: int,
+        yt_video_id: int,
+        video_id_str: str,
+        conn: Connection,
+    ) -> None:
+        """Create playlist_songs rows for each track in a COMPOSITE_TRACKS match.
+
+        Timestamp strategy (in order):
+        1. ``TrackInfo.timestamp_seconds`` extracted by the LLM from the description.
+        2. Cumulative sum of preceding tracks' TouhouDB durations (fills gaps when
+           the description is missing timestamps for some tracks).
+        3. None → SUSPICIOUS_METADATA task.
+        """
+        cumulative_offset = 0
+        for i, track_result in enumerate(match_result.track_results):
+            if track_result.best_match is None:
+                # Unmatched track — can't determine song_id; skip
+                # (cumulative offset is unknown so we stop accumulating too)
+                cumulative_offset = -1
+                continue
+
+            row = conn.execute(
+                sa.select(songs.c.id, songs.c.duration_seconds).where(
+                    songs.c.touhoudb_id == track_result.best_match.touhoudb_id
+                )
+            ).one_or_none()
+            if row is None:
+                cumulative_offset = -1
+                continue
+
+            db_song_id, duration_seconds = row
+
+            # Prefer LLM-extracted timestamp; fall back to cumulative
+            track_info = (
+                match_result.classification.tracks[i]
+                if i < len(match_result.classification.tracks)
+                else None
+            )
+            ts: int | None = track_info.timestamp_seconds if track_info else None
+            if ts is None and cumulative_offset >= 0:
+                ts = cumulative_offset
+
+            self._upsert_playlist_song(
+                song_id=db_song_id,
+                playlist_db_id=playlist_db_id,
+                yt_video_id=yt_video_id,
+                source=SourceType.COMPOSITE_VIDEO,
+                youtube_timestamp_seconds=ts,
+                conn=conn,
+            )
+
+            if ts is None:
+                self._create_task(
+                    TaskType.SUSPICIOUS_METADATA,
+                    f"Could not determine timestamp for song {db_song_id} in composite video",
+                    {"song_id": db_song_id, "video_id": video_id_str},
+                    conn,
+                    related_song_id=db_song_id,
+                )
+
+            # Advance cumulative offset for the next track
+            if cumulative_offset >= 0:
+                if duration_seconds is not None:
+                    cumulative_offset += duration_seconds
+                else:
+                    cumulative_offset = -1  # can't continue accumulating
