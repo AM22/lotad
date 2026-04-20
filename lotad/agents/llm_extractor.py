@@ -186,12 +186,29 @@ The channel name is therefore almost never the circle name.
 - **DO NOT** use the channel name as circle_name by default or as a fallback.
 - **When in doubt, leave circle_name null.** A null circle is handled gracefully downstream;
   a wrong circle actively breaks artist-filtered search.
+- **DO NOT** include romanized name in parentheses alongside the native name. Output a single
+  name only. Prefer the native-script name when both are present (e.g. `"暁Records"` not
+  `"暁Records (Akatsuki Records)"`), but the romanized-only name (e.g. `"Akatsuki Records"`)
+  is also acceptable — either form will match. Parentheticals break the lookup entirely.
+
+## composite_tracks classification hints
+
+A video is composite_tracks when it contains multiple **distinct songs** that exist as separate
+entries on TouhouDB, even if the description groups them under a single `Song:` field.
+
+Strong indicators (classify as composite_tracks):
+- Title uses `+`, `/`, `&`, `×`, `|` between two or more recognisable song titles
+  (e.g. "Secret Garden + Scarlet Serenade", "Trinity Dial / Lunatic Red")
+- Description contains two or more separate `TITLE:` (or equivalent) blocks with different
+  arrangement/original credits
+- Timestamps in description point to different song names
+
+Weaker indicator (a `Song:` field with `&`):
+- `Song: Prologue & Necro Symphonia` — if BOTH names in the field are separately recognisable
+  song titles from the same release, treat as composite_tracks. If it reads as a single title
+  (e.g. "Heaven & Earth"), treat as single_song.
 
 Description may signal composite videos even if the title format looks like a single song. Presence of timestamps signals that the song could be (but is not guaranteed to be) a composite.
-Example composite description:
-Titles: 
-Timestamp 1 - Track 1
-Timestamp 2 - Track 2
 
 ## Classification rules
 
