@@ -397,8 +397,42 @@ class IngestPipeline:
             # 3. Map song to DB
             song_id = map_song_to_db(song_detail, conn)
 
-            # 3.5. Ingest albums this song appears on
-            composite = is_album_video(item)
+            # 3.5. Classify composite videos via LLM (when the heuristic fires).
+            # The LLM receives is_album_hint and can override it using signals from
+            # the title/description, making it the authoritative source for whether
+            # this is a composite and, if so, what kind.
+            composite_match: MatchResult | None = None
+            if is_album_video(item):
+                try:
+                    composite_match = await self._extractor.find_match(
+                        title=item.title,
+                        description=item.description or "",
+                        duration_seconds=item.duration_seconds,
+                        channel_name=item.channel_name,
+                        is_album_hint=True,
+                        conn=conn,
+                        youtube_video_id=item.video_id,
+                    )
+                    logger.debug(
+                        "LLM classified composite video %s as %s",
+                        item.video_id,
+                        composite_match.video_type,
+                    )
+                except Exception:
+                    logger.exception(
+                        "LLM classification failed for composite video %s — treating as FULL_ALBUM",
+                        item.video_id,
+                    )
+
+            composite = composite_match is not None and composite_match.video_type in (
+                VideoType.FULL_ALBUM,
+                VideoType.COMPOSITE_TRACKS,
+            )
+
+            # 3.6. Ingest albums this song appears on.
+            # album_tracks rows are always linked (metadata); playlist_songs rows with
+            # timestamps are only written for FULL_ALBUM composites here — COMPOSITE_TRACKS
+            # are handled in step 3.7 by the per-track LLM results.
             composite_song_ids_written: set[int] = set()
             for album_summary in song_detail.albums:
                 try:
@@ -411,7 +445,11 @@ class IngestPipeline:
                         album_summary.name,
                         n_linked,
                     )
-                    if composite and playlist_db_id is not None:
+                    if (
+                        composite_match is not None
+                        and composite_match.video_type == VideoType.FULL_ALBUM
+                        and playlist_db_id is not None
+                    ):
                         ts_map = self._compute_album_timestamps(
                             album_detail, item.description, conn
                         )
@@ -448,40 +486,25 @@ class IngestPipeline:
                         song_id,
                     )
 
-            # 3.6. For composite non-album videos, use the LLM extractor to match
-            # each track and populate playlist_songs with per-track timestamps.
-            # Only runs when the LLM classifies the video as COMPOSITE_TRACKS (not
-            # FULL_ALBUM), so full-album videos handled in step 3.5 are unaffected.
-            if composite and playlist_db_id is not None:
-                try:
-                    match_result = await self._extractor.find_match(
-                        title=item.title,
-                        description=item.description or "",
-                        duration_seconds=item.duration_seconds,
-                        channel_name=item.channel_name,
-                        is_album_hint=True,
-                        conn=conn,
-                        youtube_video_id=item.video_id,
-                    )
-                    if match_result.video_type == VideoType.COMPOSITE_TRACKS:
-                        self._upsert_composite_track_songs(
-                            match_result, playlist_db_id, yt_video_id, item.video_id, conn
-                        )
-                        # Update the written-set so step 6 doesn't double-upsert
-                        for tr in match_result.track_results:
-                            if tr.best_match is not None:
-                                row = conn.execute(
-                                    sa.select(songs.c.id).where(
-                                        songs.c.touhoudb_id == tr.best_match.touhoudb_id
-                                    )
-                                ).one_or_none()
-                                if row is not None:
-                                    composite_song_ids_written.add(row.id)
-                except Exception:
-                    logger.exception(
-                        "LLM composite matching failed for video %s — falling back to entry-point only",
-                        item.video_id,
-                    )
+            # 3.7. For COMPOSITE_TRACKS videos, use the per-track LLM match results
+            # to create playlist_songs rows with timestamps for each identified song.
+            if (
+                composite_match is not None
+                and composite_match.video_type == VideoType.COMPOSITE_TRACKS
+                and playlist_db_id is not None
+            ):
+                self._upsert_composite_track_songs(
+                    composite_match, playlist_db_id, yt_video_id, item.video_id, conn
+                )
+                for tr in composite_match.track_results:
+                    if tr.best_match is not None:
+                        row = conn.execute(
+                            sa.select(songs.c.id).where(
+                                songs.c.touhoudb_id == tr.best_match.touhoudb_id
+                            )
+                        ).one_or_none()
+                        if row is not None:
+                            composite_song_ids_written.add(row.id)
 
             # 4. Resolve original chain + link
             # Start the chain at the song itself, not at originalVersionId.
