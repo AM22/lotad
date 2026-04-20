@@ -34,6 +34,7 @@ import sqlalchemy as sa
 from sqlalchemy import Connection
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from lotad.agents.llm_extractor import VideoType
 from lotad.config import Settings, get_settings
 from lotad.db.models import (
     SourceType,
@@ -301,6 +302,8 @@ class IngestPipeline:
         *,
         playlist_db_id: int | None = None,
         bulk_match: dict[str, int] | None = None,
+        video_type_hint: VideoType | None = None,
+        youtube_timestamp_seconds: int | None = None,
     ) -> bool:
         """
         Ingest a single YouTube video.
@@ -315,6 +318,12 @@ class IngestPipeline:
                                        video absent → immediate INGEST_FAILED (both
                                        endpoints use identical PV-lookup logic so a
                                        bulk miss is a definitive miss)
+            video_type_hint: explicit video type from the LLM (used by the
+                composite resolution path to override the ``is_album_video``
+                heuristic and suppress spurious duration-mismatch tasks).
+            youtube_timestamp_seconds: timestamp within the video where this
+                particular song starts (for composite / album videos).  Written
+                to ``playlist_songs.youtube_timestamp_seconds``.
 
         Returns True if a TouhouDB match was found, False otherwise.
         """
@@ -441,21 +450,29 @@ class IngestPipeline:
                 except Exception:
                     logger.exception("resolve_original_chain failed for song %d", song_id)
 
+            # Determine composite flag: prefer explicit hint over heuristic.
+            # Used by both integrity checks (suppress duration mismatch) and
+            # the playlist_songs source_type assignment below.
+            is_composite = (
+                video_type_hint in (VideoType.FULL_ALBUM, VideoType.COMPOSITE_TRACKS)
+                if video_type_hint is not None
+                else is_album_video(item)
+            )
+
             # 5. Integrity checks
-            self._integrity_checks(song_detail, song_id, yt_video_id, item, conn)
+            self._integrity_checks(
+                song_detail, song_id, yt_video_id, item, conn, is_composite=is_composite
+            )
 
             # 6. Create playlist_songs row (if playlist known)
             if playlist_db_id is not None:
-                source = (
-                    SourceType.COMPOSITE_VIDEO
-                    if is_album_video(item)
-                    else SourceType.INDIVIDUAL_VIDEO
-                )
+                source = SourceType.COMPOSITE_VIDEO if is_composite else SourceType.INDIVIDUAL_VIDEO
                 self._upsert_playlist_song(
                     song_id=song_id,
                     playlist_db_id=playlist_db_id,
                     yt_video_id=yt_video_id,
                     source=source,
+                    youtube_timestamp_seconds=youtube_timestamp_seconds,
                     conn=conn,
                 )
 
@@ -500,6 +517,7 @@ class IngestPipeline:
         yt_video_id: int,
         source: SourceType,
         conn: Connection,
+        youtube_timestamp_seconds: int | None = None,
     ) -> None:
         # Check for existing active entry (removed_at IS NULL)
         existing = conn.execute(
@@ -521,6 +539,7 @@ class IngestPipeline:
                 .values(
                     youtube_video_id=yt_video_id,
                     source_type=source,
+                    youtube_timestamp_seconds=youtube_timestamp_seconds,
                 )
             )
             return
@@ -562,6 +581,7 @@ class IngestPipeline:
                 playlist_id=playlist_db_id,
                 youtube_video_id=yt_video_id,
                 source_type=source,
+                youtube_timestamp_seconds=youtube_timestamp_seconds,
             )
             .on_conflict_do_nothing()
         )
@@ -634,11 +654,16 @@ class IngestPipeline:
         yt_video_id: int,
         item: PlaylistItem,
         conn: Connection,
+        *,
+        is_composite: bool = False,
     ) -> None:
         """Run metadata integrity checks; create tasks on violations."""
-        # Duration mismatch: >20% difference
+        # Duration mismatch: >20% difference.
+        # Suppressed for composite videos — the video duration covers many songs
+        # so it will always mismatch the single-song TouhouDB duration.
         if (
-            detail.lengthSeconds
+            not is_composite
+            and detail.lengthSeconds
             and item.duration_seconds
             and abs(detail.lengthSeconds - item.duration_seconds) / max(detail.lengthSeconds, 1)
             > 0.20

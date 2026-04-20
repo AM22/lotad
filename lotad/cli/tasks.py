@@ -603,14 +603,43 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
         choice = click.prompt("Choice", default="1").strip().upper()
 
         if choice == "1":
+            from lotad.agents.llm_extractor import VideoType
+
             vtype = llm_match.get("video_type")
-            if vtype == "full_album":
+            if vtype == VideoType.FULL_ALBUM:
                 track_ids = llm_match.get("album_track_touhoudb_ids") or []
                 if track_ids:
-                    await _do_ingest_composite(task_id, data, video, track_ids)
+                    await _do_ingest_composite(
+                        task_id, data, video, track_ids, video_type=VideoType.FULL_ALBUM
+                    )
                 else:
                     console.print(
                         "[red]No track IDs in LLM match data. "
+                        "Enter song IDs manually via option [3].[/red]"
+                    )
+            elif vtype == VideoType.COMPOSITE_TRACKS:
+                track_results = llm_match.get("track_results") or []
+                top_tracks = (llm_match.get("classification") or {}).get("tracks") or []
+                track_ids = [
+                    r["best_match"]["touhoudb_id"] for r in track_results if r.get("best_match")
+                ]
+                hint_ts = (
+                    [t.get("timestamp_seconds") for t in top_tracks[: len(track_ids)]]
+                    if top_tracks
+                    else None
+                )
+                if track_ids:
+                    await _do_ingest_composite(
+                        task_id,
+                        data,
+                        video,
+                        track_ids,
+                        video_type=VideoType.COMPOSITE_TRACKS,
+                        hint_timestamps=hint_ts,
+                    )
+                else:
+                    console.print(
+                        "[red]No matched tracks in LLM data. "
                         "Enter song IDs manually via option [3].[/red]"
                     )
             else:
@@ -619,9 +648,13 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
             tdb_id = click.prompt("TouhouDB song ID", type=int)
             await _do_ingest_single(task_id, data, video, tdb_id)
         elif choice == "3":
+            from lotad.agents.llm_extractor import VideoType
+
             raw = click.prompt("Comma-separated TouhouDB song IDs")
             ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
-            await _do_ingest_composite(task_id, data, video, ids)
+            await _do_ingest_composite(
+                task_id, data, video, ids, video_type=VideoType.COMPOSITE_TRACKS
+            )
         elif choice == "D":
             with get_engine().begin() as conn:
                 manager.dismiss_task(conn, task_id)
@@ -735,9 +768,18 @@ async def _do_ingest_single(task_id: int, data: dict, video_row: Any, touhoudb_i
 
 
 async def _do_ingest_composite(
-    task_id: int, data: dict, video_row: Any, touhoudb_ids: list[int]
+    task_id: int,
+    data: dict,
+    video_row: Any,
+    touhoudb_ids: list[int],
+    *,
+    video_type: Any,
+    hint_timestamps: list[int | None] | None = None,
 ) -> None:
+    import sqlalchemy as sa
+
     from lotad.config import get_settings
+    from lotad.db.models import songs as songs_table
     from lotad.ingestion.pipeline import IngestPipeline
     from lotad.ingestion.youtube_client import PlaylistItem
 
@@ -749,8 +791,18 @@ async def _do_ingest_composite(
     console.print(f"\nIngesting {len(touhoudb_ids)} tracks from composite video...")
     settings = get_settings()
     success_count = 0
+
+    # Timestamps are computed incrementally: for each track, the timestamp is
+    # either the LLM hint (if provided) or the running cumulative offset.  We
+    # can only query a song's duration *after* ingest_video has upserted it,
+    # so cursor advancement happens inside the loop after each successful call.
+    cursor: int | None = 0
+
     async with IngestPipeline(settings) as pipeline:
-        for tdb_id in touhoudb_ids:
+        for i, tdb_id in enumerate(touhoudb_ids):
+            hint = hint_timestamps[i] if (hint_timestamps and i < len(hint_timestamps)) else None
+            ts = hint if hint is not None else cursor
+
             item = PlaylistItem(
                 video_id=video_row["video_id"],
                 title=video_row.get("title") or "",
@@ -761,12 +813,25 @@ async def _do_ingest_composite(
                 is_available=True,
             )
             ok = await pipeline.ingest_video(
-                item, playlist_db_id=playlist_db_id, bulk_match={item.video_id: tdb_id}
+                item,
+                playlist_db_id=playlist_db_id,
+                bulk_match={item.video_id: tdb_id},
+                video_type_hint=video_type,
+                youtube_timestamp_seconds=ts,
             )
             status_str = "[green]✓[/green]" if ok else "[red]✗[/red]"
-            console.print(f"  {status_str} TouhouDB #{tdb_id}")
+            ts_str = f" @ {ts // 60}:{ts % 60:02d}" if ts is not None else ""
+            console.print(f"  {status_str} TouhouDB #{tdb_id}{ts_str}")
             if ok:
                 success_count += 1
+                # Advance cursor using the song's duration now that it's in our DB
+                with get_engine().connect() as conn:
+                    dur = conn.execute(
+                        sa.select(songs_table.c.duration_seconds).where(
+                            songs_table.c.touhoudb_id == tdb_id
+                        )
+                    ).scalar_one_or_none()
+                cursor = ts + dur if (ts is not None and dur is not None) else None
 
     if success_count > 0:
         with get_engine().begin() as conn:
