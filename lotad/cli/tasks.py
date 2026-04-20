@@ -608,8 +608,19 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
             if vtype == VideoType.FULL_ALBUM:
                 track_ids = llm_match.get("album_track_touhoudb_ids") or []
                 if track_ids:
+                    top_tracks = (llm_match.get("classification") or {}).get("tracks") or []
+                    hint_ts = (
+                        [t.get("timestamp_seconds") for t in top_tracks[: len(track_ids)]]
+                        if top_tracks
+                        else None
+                    )
                     await _do_ingest_composite(
-                        task_id, data, video, track_ids, video_type=VideoType.FULL_ALBUM
+                        task_id,
+                        data,
+                        video,
+                        track_ids,
+                        video_type=VideoType.FULL_ALBUM,
+                        hint_timestamps=hint_ts,
                     )
                 else:
                     console.print(
