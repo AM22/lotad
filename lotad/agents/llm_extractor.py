@@ -515,8 +515,7 @@ def _score_song_candidate(
     if circle_filter_confirmed or (
         confirmed_artist_id is not None
         and any(
-            a.artist is not None and a.artist.id == confirmed_artist_id
-            for a in candidate.artists
+            a.artist is not None and a.artist.id == confirmed_artist_id for a in candidate.artists
         )
     ):
         # Circle identity already confirmed by TouhouDB's own artist filter or by
