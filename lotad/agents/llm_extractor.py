@@ -369,36 +369,35 @@ def _has_cjk(s: str) -> bool:
     return False
 
 
-# Matches a structured metadata label at the start of a line, e.g.
-#   "Circle: Shibayan Records", "Arrangement：葵", "Vocal : 黒崎朔夜"
-_STRUCTURED_FIELD_RE = re.compile(
-    r"^(title|circle|artist|arranger|vocal|lyric|album|original|source|arrangement|作曲|編曲|歌|ボーカル)\s*[:：]",
-    re.IGNORECASE | re.MULTILINE,
-)
+# Three specific field patterns that together indicate a fully-structured description.
+# Pattern is liberal: anything before the keyword, optional filler between keyword and colon.
+# e.g. "Song Title:", "Original title:", "Circle Name:", "Original:", "曲名："
+_TITLE_FIELD_RE = re.compile(r"^[^\n]*(title|song)[^\n]*[:：]", re.IGNORECASE | re.MULTILINE)
+_CIRCLE_FIELD_RE = re.compile(r"^[^\n]*circle[^\n]*[:：]", re.IGNORECASE | re.MULTILINE)
+_ORIGINAL_FIELD_RE = re.compile(r"^[^\n]*original[^\n]*[:：]", re.IGNORECASE | re.MULTILINE)
 
 
 def _description_is_sufficient(description: str) -> bool:
-    """Return True when the description contains enough info to classify without comments.
+    """Return True when the description has all three key fields: title/song, circle, original.
 
     We offer ``request_more_context`` only when this returns False — i.e. when the
     description is genuinely sparse.  This is a Python-side gate so the decision
     is not left to the LLM's prompt adherence alone.
 
-    Sufficient when:
-    - Contains at least one structured metadata label (Circle:, Title:, Arrangement:, etc.)
-    - OR has > 150 chars of non-URL, non-whitespace content
+    Requires ALL THREE labeled fields to be present:
+    - A title/song line:  [anything](title|song)[anything]:[anything]
+    - A circle line:      [anything]circle[anything]:[anything]
+    - An original line:   [anything]original[anything]:[anything]
 
-    Insufficient when:
-    - Empty / very short (< 30 chars total)
-    - Only social-media links / boilerplate
+    Insufficient when any of the three are missing, or description is empty/short.
     """
     if not description or len(description.strip()) < 30:
         return False
-    if _STRUCTURED_FIELD_RE.search(description):
-        return True
-    # Strip URLs and whitespace, check remaining substance
-    stripped = re.sub(r"https?://\S+", "", description).strip()
-    return len(stripped) > 150
+    return bool(
+        _TITLE_FIELD_RE.search(description)
+        and _CIRCLE_FIELD_RE.search(description)
+        and _ORIGINAL_FIELD_RE.search(description)
+    )
 
 
 def _normalize_search_title(title: str) -> str:
@@ -725,7 +724,7 @@ class LLMExtractor:
             comments_text = ""
             if self._yt is not None and youtube_video_id is not None:
                 logger.warning(
-                    "Fetching YouTube comments for %r (%s)",
+                    "YOUTUBE COMMENTS: fetching top comments for %r (%s)",
                     title,
                     youtube_video_id,
                 )
