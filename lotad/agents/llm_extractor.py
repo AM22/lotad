@@ -369,6 +369,38 @@ def _has_cjk(s: str) -> bool:
     return False
 
 
+# Matches a structured metadata label at the start of a line, e.g.
+#   "Circle: Shibayan Records", "Arrangement：葵", "Vocal : 黒崎朔夜"
+_STRUCTURED_FIELD_RE = re.compile(
+    r"^(title|circle|artist|arranger|vocal|lyric|album|original|source|arrangement|作曲|編曲|歌|ボーカル)\s*[:：]",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _description_is_sufficient(description: str) -> bool:
+    """Return True when the description contains enough info to classify without comments.
+
+    We offer ``request_more_context`` only when this returns False — i.e. when the
+    description is genuinely sparse.  This is a Python-side gate so the decision
+    is not left to the LLM's prompt adherence alone.
+
+    Sufficient when:
+    - Contains at least one structured metadata label (Circle:, Title:, Arrangement:, etc.)
+    - OR has > 150 chars of non-URL, non-whitespace content
+
+    Insufficient when:
+    - Empty / very short (< 30 chars total)
+    - Only social-media links / boilerplate
+    """
+    if not description or len(description.strip()) < 30:
+        return False
+    if _STRUCTURED_FIELD_RE.search(description):
+        return True
+    # Strip URLs and whitespace, check remaining substance
+    stripped = re.sub(r"https?://\S+", "", description).strip()
+    return len(stripped) > 150
+
+
 def _normalize_search_title(title: str) -> str:
     """Normalise a song title for use as a TouhouDB search query.
 
@@ -653,14 +685,24 @@ class LLMExtractor:
             f"\nDescription:\n{description}"
         )
 
-        # First pass — offer both tools so the LLM can request comments if needed
+        # First pass — offer request_more_context only when description is genuinely sparse.
+        # If the description already has structured fields or substantial content, force
+        # classify_video directly (tool_choice="tool") to avoid unnecessary comment fetches.
+        desc_sufficient = _description_is_sufficient(description)
+        if desc_sufficient:
+            first_tools = [_TOOL_DEF]
+            first_choice: dict = {"type": "tool", "name": "classify_video"}
+        else:
+            first_tools = [_TOOL_DEF, _REQUEST_CONTEXT_TOOL]
+            first_choice = {"type": "any"}
+
         messages: list[dict] = [{"role": "user", "content": user_message}]
         response = await self._client.messages.create(
             model=self._settings.anthropic_model,
             max_tokens=2048,
             system=_SYSTEM_PROMPT,
-            tools=[_TOOL_DEF, _REQUEST_CONTEXT_TOOL],
-            tool_choice={"type": "any"},
+            tools=first_tools,
+            tool_choice=first_choice,
             messages=messages,
         )
 
@@ -673,7 +715,7 @@ class LLMExtractor:
 
         if tool_use_block is not None and tool_use_block.name == "request_more_context":
             reason = tool_use_block.input.get("reason", "")
-            logger.info(
+            logger.warning(
                 "LLM requested more context for %r: %s",
                 title,
                 reason,
@@ -682,7 +724,7 @@ class LLMExtractor:
             # Fetch comments (best-effort — empty string if unavailable/timeout)
             comments_text = ""
             if self._yt is not None and youtube_video_id is not None:
-                logger.info(
+                logger.warning(
                     "Fetching YouTube comments for %r (%s)",
                     title,
                     youtube_video_id,
