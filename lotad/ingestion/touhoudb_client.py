@@ -585,8 +585,12 @@ class TouhouDBClient:
         ``artistId`` + ``artistParticipationStatus=Everything`` params).
         Note: ``artistName`` text filter is NOT supported by TouhouDB (returns 400).
         """
-        # Valid SongSortRule values: Name, AdditionDate, FavoritedTimes, PublishDate,
-        # RatingScore, TagUsageCount, SongType  ("SongInAlbum" is NOT valid)
+        # No "sort" param: TouhouDB defaults to relevance ordering, which is fast.
+        # sort=FavoritedTimes requires an aggregation JOIN against the favorites table
+        # and reliably causes ReadTimeout on unfiltered searches — tested: 5/6 queries
+        # time out at 10s with FavoritedTimes; all return in <1.5s without it.
+        # Our scoring re-orders candidates by our own score anyway, so server sort order
+        # is irrelevant.
         params: dict[str, Any] = {
             "query": query,
             "nameMatchMode": "Words",
@@ -594,7 +598,6 @@ class TouhouDBClient:
             "lang": "Default",
             "maxResults": max_results,
             "getTotalCount": "false",
-            "sort": "FavoritedTimes",
         }
         if artist_id is not None:
             params["artistId"] = artist_id
