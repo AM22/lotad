@@ -81,6 +81,18 @@ def build_async_client(
         allow_stale=False,
         force_cache=False,
     )
+    # keepalive_expiry=3s: proactively close pooled connections idle for >3s.
+    # Without this, httpcore reuses a TCP connection that TouhouDB's server has
+    # already silently closed (server-side idle timeout).  The client sends a
+    # request on the dead socket and waits up to the full timeout for headers
+    # that never arrive.  This manifests as clusters of ReadTimeout at the start
+    # of each enrich batch — the TouhouDB connection sits idle while Claude API
+    # processes each task (~3s), which is enough for the server to close it.
+    limits = httpx.Limits(
+        max_keepalive_connections=5,
+        max_connections=10,
+        keepalive_expiry=3.0,
+    )
     return hishel.AsyncCacheClient(
         storage=storage,
         controller=controller,
@@ -90,4 +102,5 @@ def build_async_client(
             "Accept": "application/json",
         },
         timeout=timeout,
+        limits=limits,
     )
