@@ -1193,6 +1193,43 @@ def tasks_enrich(task_id: int | None, enrich_all: bool, dry_run: bool, limit: in
     )
 
 
+def _identify_service(exc: Exception) -> str:
+    """Return a short ALL-CAPS service label for an exception caught in the enrich loop.
+
+    Checked in order:
+    1. anthropic.APIError subclasses  → CLAUDE API
+    2. URL on the request object      → TOUHOUDB or YOUTUBE API
+    3. Module name heuristic          → best guess
+    """
+    try:
+        import anthropic as _anthropic
+
+        if isinstance(exc, _anthropic.APIError):
+            return "CLAUDE API"
+    except ImportError:
+        pass
+
+    req = getattr(exc, "request", None)
+    if req is not None:
+        url = str(req.url).lower()
+        if "touhoudb" in url or "vocadb" in url:
+            return "TOUHOUDB"
+        if "googleapis" in url or "youtube" in url:
+            return "YOUTUBE API"
+        if "anthropic" in url:
+            return "CLAUDE API"
+
+    mod = type(exc).__module__ or ""
+    if "anthropic" in mod:
+        return "CLAUDE API"
+    if "httpx" in mod:
+        return "TOUHOUDB"  # httpx is only used for TouhouDB in this codebase
+    if "google" in mod or "youtube" in mod:
+        return "YOUTUBE API"
+
+    return type(exc).__module__.split(".")[0].upper() or "UNKNOWN"
+
+
 async def _run_enrich(
     *,
     task_id: int | None,
@@ -1200,7 +1237,6 @@ async def _run_enrich(
     dry_run: bool,
     limit: int,
 ) -> None:
-    import httpx
     import sqlalchemy as sa
 
     from lotad.agents.llm_extractor import LLMExtractor, VideoType
@@ -1276,68 +1312,31 @@ async def _run_enrich(
                 )
                 continue
 
-            # Task-level retry: back off on network/timeout errors so a brief
-            # TouhouDB or Claude hiccup doesn't permanently skip the task.
-            # Per-request retries (in TouhouDBClient._get) handle individual
-            # transient blips; this outer loop handles the case where the server
-            # is temporarily overloaded and all per-request retries also fail.
-            _TASK_RETRIES = 3
-            _TASK_RETRY_BACKOFF = [0, 15, 45]  # seconds to wait before each attempt
             result = None
-            last_exc: Exception | None = None
-            for _attempt in range(_TASK_RETRIES):
-                if _TASK_RETRY_BACKOFF[_attempt]:
-                    console.print(
-                        f"  [dim]retrying in {_TASK_RETRY_BACKOFF[_attempt]}s "
-                        f"(attempt {_attempt + 1}/{_TASK_RETRIES})…[/dim]"
+            try:
+                with engine.connect() as match_conn:
+                    result = await extractor.find_match(
+                        title=video_row.get("title") or "",
+                        description=video_row.get("description") or "",
+                        duration_seconds=video_row.get("duration_seconds"),
+                        channel_name=video_row.get("channel_name"),
+                        is_album_hint=data.get("is_album", False),
+                        conn=match_conn,
+                        youtube_video_id=video_row.get("video_id"),
                     )
-                    await asyncio.sleep(_TASK_RETRY_BACKOFF[_attempt])
-                try:
-                    with engine.connect() as match_conn:
-                        result = await extractor.find_match(
-                            title=video_row.get("title") or "",
-                            description=video_row.get("description") or "",
-                            duration_seconds=video_row.get("duration_seconds"),
-                            channel_name=video_row.get("channel_name"),
-                            is_album_hint=data.get("is_album", False),
-                            conn=match_conn,
-                            youtube_video_id=video_row.get("video_id"),
-                        )
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    import traceback
+            except Exception as exc:
+                import traceback
 
-                    is_transient = isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
-                    # Fully-qualified name (module.ClassName) to distinguish e.g.
-                    # httpx.ReadTimeout vs requests.exceptions.ReadTimeout vs socket.timeout
-                    exc_name = f"{type(exc).__module__}.{type(exc).__name__}"
-                    # URL from httpx exceptions (not available on socket/requests exceptions)
-                    url_hint = ""
-                    req = getattr(exc, "request", None)
-                    if req is not None:
-                        url_hint = f" [{req.url}]"
-                    # Always log full traceback at DEBUG level so it's visible with --log-level DEBUG
-                    logger.debug(
-                        "Task %d failed (attempt %d):\n%s",
-                        tid,
-                        _attempt + 1,
-                        traceback.format_exc(),
-                    )
-                    last_exc = exc
-                    if is_transient and _attempt < _TASK_RETRIES - 1:
-                        console.print(
-                            f"[{i}/{total}] #{tid}  {short_title!r}  "
-                            f"[yellow]transient {exc_name}{url_hint} — will retry[/yellow]"
-                        )
-                    else:
-                        console.print(
-                            f"[{i}/{total}] #{tid}  {short_title!r}  "
-                            f"— [red]error: {exc_name}{url_hint}: {exc!r}[/red]"
-                        )
-                        break  # non-transient errors don't retry
-
-            if last_exc is not None:
+                service = _identify_service(exc)
+                exc_name = f"{type(exc).__module__}.{type(exc).__name__}"
+                req = getattr(exc, "request", None)
+                url_hint = f" [{req.url}]" if req is not None else ""
+                tb = traceback.format_exc()
+                console.print(
+                    f"[{i}/{total}] #{tid}  {short_title!r}  "
+                    f"— [red][{service}] {exc_name}{url_hint}: {exc!r}[/red]"
+                )
+                console.print(f"[dim]{tb}[/dim]")
                 continue
 
             # Small inter-task delay to avoid hammering TouhouDB
