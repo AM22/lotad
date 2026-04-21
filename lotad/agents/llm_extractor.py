@@ -186,12 +186,29 @@ The channel name is therefore almost never the circle name.
 - **DO NOT** use the channel name as circle_name by default or as a fallback.
 - **When in doubt, leave circle_name null.** A null circle is handled gracefully downstream;
   a wrong circle actively breaks artist-filtered search.
+- **DO NOT** include romanized name in parentheses alongside the native name. Output a single
+  name only. Prefer the native-script name when both are present (e.g. `"暁Records"` not
+  `"暁Records (Akatsuki Records)"`), but the romanized-only name (e.g. `"Akatsuki Records"`)
+  is also acceptable — either form will match. Parentheticals break the lookup entirely.
+
+## composite_tracks classification hints
+
+A video is composite_tracks when it contains multiple **distinct songs** that exist as separate
+entries on TouhouDB, even if the description groups them under a single `Song:` field.
+
+Strong indicators (classify as composite_tracks):
+- Title uses `+`, `/`, `&`, `×`, `|` between two or more recognisable song titles
+  (e.g. "Secret Garden + Scarlet Serenade", "Trinity Dial / Lunatic Red")
+- Description contains two or more separate `TITLE:` (or equivalent) blocks with different
+  arrangement/original credits
+- Timestamps in description point to different song names
+
+Weaker indicator (a `Song:` field with `&`):
+- `Song: Prologue & Necro Symphonia` — if BOTH names in the field are separately recognisable
+  song titles from the same release, treat as composite_tracks. If it reads as a single title
+  (e.g. "Heaven & Earth"), treat as single_song.
 
 Description may signal composite videos even if the title format looks like a single song. Presence of timestamps signals that the song could be (but is not guaranteed to be) a composite.
-Example composite description:
-Titles: 
-Timestamp 1 - Track 1
-Timestamp 2 - Track 2
 
 ## Classification rules
 
@@ -467,6 +484,7 @@ def _score_song_candidate(
     video_duration: int | None,
     *,
     confirmed_artist_id: int | None = None,
+    circle_filter_confirmed: bool = False,
 ) -> tuple[float, dict[str, float]]:
     """
     Score a SongDetail against VideoClassification extracted terms.
@@ -478,10 +496,15 @@ def _score_song_candidate(
       album      0.20
       duration   0.20
 
-    If *confirmed_artist_id* is provided (meaning the search was already filtered
-    by this TouhouDB artist ID), and the candidate's artist list contains that ID,
-    the circle score is set to 1.0 — bypassing cross-script string comparison which
-    fails e.g. for "Shibayan Records" vs "しばやん feat. 3L".
+    Circle score is set to 1.0 when any of these hold:
+    - circle_filter_confirmed=True: the TouhouDB search was filtered by the circle's
+      artist ID, so every returned candidate is already guaranteed to be from that
+      circle. This is the common case — circles are credited at album level, not at
+      song level, so checking candidate.artists is not reliable.
+    - confirmed_artist_id matches an entry in candidate.artists: the circle also
+      happens to be credited directly on the song (less common).
+    Both cases bypass cross-script string comparison (e.g. "Shibayan Records" vs
+    "しばやん feat. 3L") which gives near-zero similarity for romanized vs CJK names.
     """
     breakdown: dict[str, float] = {}
 
@@ -489,10 +512,14 @@ def _score_song_candidate(
     breakdown["title"] = _best_title_score(candidate, title_q) if title_q else 0.0
 
     circle_q = classification.circle_name or ""
-    if confirmed_artist_id is not None and any(
-        a.artist is not None and a.artist.id == confirmed_artist_id for a in candidate.artists
+    if circle_filter_confirmed or (
+        confirmed_artist_id is not None
+        and any(
+            a.artist is not None and a.artist.id == confirmed_artist_id for a in candidate.artists
+        )
     ):
-        # Artist was confirmed via ID-based API filter — no string comparison needed
+        # Circle identity already confirmed by TouhouDB's own artist filter or by
+        # matching the artist ID in song-level credits — full credit, no string math.
         breakdown["circle"] = 1.0
     else:
         breakdown["circle"] = _artist_string_score(candidate, circle_q) if circle_q else 0.0
@@ -536,11 +563,16 @@ def _candidates_from_songs(
     video_duration: int | None,
     *,
     confirmed_artist_id: int | None = None,
+    circle_filter_confirmed: bool = False,
 ) -> list[CandidateMatch]:
     results = []
     for s in songs:
         score, breakdown = _score_song_candidate(
-            s, classification, video_duration, confirmed_artist_id=confirmed_artist_id
+            s,
+            classification,
+            video_duration,
+            confirmed_artist_id=confirmed_artist_id,
+            circle_filter_confirmed=circle_filter_confirmed,
         )
         results.append(
             CandidateMatch(
@@ -750,21 +782,27 @@ class LLMExtractor:
         if conn is not None:
             # 1a. Exact name match
             row = conn.execute(
-                sa.select(artists_table.c.touhoudb_id).where(
+                sa.select(artists_table.c.touhoudb_id)
+                .where(
                     artists_table.c.name == circle_name,
                     artists_table.c.touhoudb_id.isnot(None),
                 )
-            ).one_or_none()
+                .limit(1)
+            ).fetchone()
             if row:
                 return row[0]
 
-            # 1b. Case-insensitive ILIKE (handles minor capitalisation differences)
+            # 1b. Case-insensitive ILIKE (handles minor capitalisation differences).
+            # Use fetchone() not one_or_none() — duplicate artist rows with the same
+            # name (or names that ILIKE-collide) would raise MultipleResultsFound.
             row = conn.execute(
-                sa.select(artists_table.c.touhoudb_id).where(
+                sa.select(artists_table.c.touhoudb_id)
+                .where(
                     artists_table.c.name.ilike(circle_name),
                     artists_table.c.touhoudb_id.isnot(None),
                 )
-            ).one_or_none()
+                .limit(1)
+            ).fetchone()
             if row:
                 return row[0]
 
@@ -861,7 +899,15 @@ class LLMExtractor:
         additional_filter_ids: list[int] = []
 
         if classification.circle_name:
-            confirmed_circle_id = await self._resolve_artist_id(classification.circle_name, conn)
+            # Strip ASCII-only parentheticals from circle names that include a
+            # romanization, e.g. "暁Records (Akatsuki Records)" → "暁Records",
+            # "俺++ (Includeore)" → "俺++".  The raw name won't match TouhouDB.
+            circle_name_for_lookup = re.sub(
+                r"\s*\([^)]*\)",
+                lambda m: "" if m.group(0).isascii() else m.group(0),
+                classification.circle_name,
+            ).strip()
+            confirmed_circle_id = await self._resolve_artist_id(circle_name_for_lookup, conn)
             if confirmed_circle_id:
                 filter_artist_id = confirmed_circle_id
                 logger.debug(
@@ -870,9 +916,14 @@ class LLMExtractor:
                     confirmed_circle_id,
                 )
             else:
+                display_name = (
+                    f"{classification.circle_name!r} (looked up as {circle_name_for_lookup!r})"
+                    if circle_name_for_lookup != classification.circle_name
+                    else repr(classification.circle_name)
+                )
                 logger.warning(
-                    "Could not resolve artist_id for circle %r — trying arrangers/vocalists",
-                    classification.circle_name,
+                    "Could not resolve artist_id for circle %s — trying arrangers/vocalists",
+                    display_name,
                 )
 
         # Always resolve arranger/vocalist IDs (cap: first 2 arrangers + first vocalist).
@@ -950,25 +1001,42 @@ class LLMExtractor:
 
         # Search with the primary artist filter, then try each additional fallback ID,
         # then fall back to title-only if all filtered searches return nothing.
+        # Track which artist_id (if any) produced the final result set so we can
+        # tell the scorer whether the circle filter was active.
         songs: list = []
+        active_filter_id: int | None = None
         if filter_artist_id is not None:
             songs = await self._tdb.search_songs(query, artist_id=filter_artist_id)
-            if not songs:
+            if songs:
+                active_filter_id = filter_artist_id
+            else:
                 for fallback_id in additional_filter_ids or []:
                     songs = await self._tdb.search_songs(query, artist_id=fallback_id)
                     if songs:
+                        active_filter_id = fallback_id
                         logger.debug(
                             "Primary filter returned nothing; fallback artist_id=%d found results",
                             fallback_id,
                         )
                         break
-            if not songs:
-                songs = await self._tdb.search_songs(query)
-        else:
+        if not songs:
             songs = await self._tdb.search_songs(query)
+            active_filter_id = None
+
+        # circle_filter_confirmed: every result from a confirmed-circle-ID filtered
+        # search is guaranteed to be from that circle (TouhouDB enforces it server-side).
+        # This lets us award circle=1.0 even when the circle doesn't appear in
+        # song-level artist credits (most circles are credited at album level only).
+        circle_filter_confirmed = (
+            active_filter_id is not None and active_filter_id == confirmed_circle_id
+        )
 
         candidates = _candidates_from_songs(
-            songs, classification, video_duration, confirmed_artist_id=confirmed_circle_id
+            songs,
+            classification,
+            video_duration,
+            confirmed_artist_id=confirmed_circle_id,
+            circle_filter_confirmed=circle_filter_confirmed,
         )
         best = candidates[0] if candidates else None
         confidence = _confidence_from_score(best.score if best else 0.0)
@@ -979,6 +1047,7 @@ class LLMExtractor:
                 classification,
                 video_duration,
                 confirmed_artist_id=confirmed_circle_id,
+                circle_filter_confirmed=circle_filter_confirmed,
             )
 
         return MatchResult(
