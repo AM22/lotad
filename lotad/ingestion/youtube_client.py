@@ -222,7 +222,7 @@ class YouTubeClient:
             )
         except HttpError as exc:
             # 403 = comments disabled; 404 = video not found — both expected
-            logger.debug("commentThreads.list failed for %s: %s", video_id, exc)
+            logger.debug("YOUTUBE COMMENTS: disabled or not found for %s: %s", video_id, exc)
             return []
         except Exception as exc:
             # Network errors (socket.timeout, ConnectionResetError, SSL errors, etc.)
@@ -231,7 +231,7 @@ class YouTubeClient:
             # LLM pipeline.  The asyncio.wait_for wrapper in llm_extractor only catches
             # asyncio.TimeoutError; sync exceptions from this thread bypass it.
             logger.warning(
-                "commentThreads.list network error for %s (%s: %s) — continuing without comments",
+                "YOUTUBE COMMENTS: network error for %s (%s: %s) — continuing without",
                 video_id,
                 type(exc).__name__,
                 exc,

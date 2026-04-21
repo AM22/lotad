@@ -369,6 +369,37 @@ def _has_cjk(s: str) -> bool:
     return False
 
 
+# Three specific field patterns that together indicate a fully-structured description.
+# Pattern is liberal: anything before the keyword, optional filler between keyword and colon.
+# e.g. "Song Title:", "Original title:", "Circle Name:", "Original:", "曲名："
+_TITLE_FIELD_RE = re.compile(r"^[^\n]*(title|song)[^\n]*[:：]", re.IGNORECASE | re.MULTILINE)
+_CIRCLE_FIELD_RE = re.compile(r"^[^\n]*circle[^\n]*[:：]", re.IGNORECASE | re.MULTILINE)
+_ORIGINAL_FIELD_RE = re.compile(r"^[^\n]*original[^\n]*[:：]", re.IGNORECASE | re.MULTILINE)
+
+
+def _description_is_sufficient(description: str) -> bool:
+    """Return True when the description has all three key fields: title/song, circle, original.
+
+    We offer ``request_more_context`` only when this returns False — i.e. when the
+    description is genuinely sparse.  This is a Python-side gate so the decision
+    is not left to the LLM's prompt adherence alone.
+
+    Requires ALL THREE labeled fields to be present:
+    - A title/song line:  [anything](title|song)[anything]:[anything]
+    - A circle line:      [anything]circle[anything]:[anything]
+    - An original line:   [anything]original[anything]:[anything]
+
+    Insufficient when any of the three are missing, or description is empty/short.
+    """
+    if not description or len(description.strip()) < 30:
+        return False
+    return bool(
+        _TITLE_FIELD_RE.search(description)
+        and _CIRCLE_FIELD_RE.search(description)
+        and _ORIGINAL_FIELD_RE.search(description)
+    )
+
+
 def _normalize_search_title(title: str) -> str:
     """Normalise a song title for use as a TouhouDB search query.
 
@@ -653,14 +684,24 @@ class LLMExtractor:
             f"\nDescription:\n{description}"
         )
 
-        # First pass — offer both tools so the LLM can request comments if needed
+        # First pass — offer request_more_context only when description is genuinely sparse.
+        # If the description already has structured fields or substantial content, force
+        # classify_video directly (tool_choice="tool") to avoid unnecessary comment fetches.
+        desc_sufficient = _description_is_sufficient(description)
+        if desc_sufficient:
+            first_tools = [_TOOL_DEF]
+            first_choice: dict = {"type": "tool", "name": "classify_video"}
+        else:
+            first_tools = [_TOOL_DEF, _REQUEST_CONTEXT_TOOL]
+            first_choice = {"type": "any"}
+
         messages: list[dict] = [{"role": "user", "content": user_message}]
         response = await self._client.messages.create(
             model=self._settings.anthropic_model,
             max_tokens=2048,
             system=_SYSTEM_PROMPT,
-            tools=[_TOOL_DEF, _REQUEST_CONTEXT_TOOL],
-            tool_choice={"type": "any"},
+            tools=first_tools,
+            tool_choice=first_choice,
             messages=messages,
         )
 
@@ -673,7 +714,7 @@ class LLMExtractor:
 
         if tool_use_block is not None and tool_use_block.name == "request_more_context":
             reason = tool_use_block.input.get("reason", "")
-            logger.info(
+            logger.warning(
                 "LLM requested more context for %r: %s",
                 title,
                 reason,
@@ -682,8 +723,8 @@ class LLMExtractor:
             # Fetch comments (best-effort — empty string if unavailable/timeout)
             comments_text = ""
             if self._yt is not None and youtube_video_id is not None:
-                logger.info(
-                    "Fetching YouTube comments for %r (%s)",
+                logger.warning(
+                    "YOUTUBE COMMENTS: fetching top comments for %r (%s)",
                     title,
                     youtube_video_id,
                 )
