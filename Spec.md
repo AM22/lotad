@@ -673,25 +673,25 @@ Each bullet below corresponds to roughly one implementable unit of work (think: 
 
 ---
 
-#### Milestone 4 — LLM Fallback Path + Task System *(Partially Complete)*
+#### Milestone 4 — LLM Fallback Path + Task System *(Complete)*
 
-**Arrangement Chronicle scraper**
+**Arrangement Chronicle scraper** *(Deprioritized)*
 - [ ] Implement `lotad/agents/arrangement_chronicle.py` — OpenClaw agent that searches `https://touhou.arrangement-chronicle.com/detail_search` for a song by title + circle name extracted from YouTube title/description; returns structured match if found
 - [ ] Playwright fallback: if OpenClaw unavailable, use `playwright.async_api` to navigate and scrape the same page deterministically
 - [ ] Pydantic response model: `ArrangementChronicleResult` with same fields as TouhouDB result; shared `SongMetadata` base type
 
 **LLM extractor**
-- [ ] Implement `lotad/agents/llm_extractor.py` — `extract_metadata(item: PlaylistItem) -> SongMetadataExtraction` using direct Anthropic SDK (`anthropic.AsyncAnthropic`); structured output via `client.messages.create` with tool use / JSON mode
-- [ ] `SongMetadataExtraction` Pydantic model: `title`, `arranger_names`, `vocalist_names`, `lyricist_names`, `circle_name`, `original_song_names`, `language`, `confidence: ConfidenceLevel`, `extraction_notes`
-- [ ] Adversarial content guard: prompt instructs the model to flag if title/description looks intentionally misleading; low-confidence extractions surface `SUSPICIOUS_METADATA` task
-- [ ] TouhouDB fuzzy validation: after LLM extraction, run `touhoudb_client.lookup_by_name(title, circle)` to cross-validate; mismatch → `SUSPICIOUS_METADATA` task; match → upsert with merged data
+- [x] Implement `lotad/agents/llm_extractor.py` — `extract_metadata(item: PlaylistItem) -> SongMetadataExtraction` using direct Anthropic SDK (`anthropic.AsyncAnthropic`); structured output via `client.messages.create` with tool use / JSON mode
+- [x] `SongMetadataExtraction` Pydantic model: `title`, `arranger_names`, `vocalist_names`, `lyricist_names`, `circle_name`, `original_song_names`, `language`, `confidence: ConfidenceLevel`, `extraction_notes`
+- [ ] Adversarial content guard: prompt instructs the model to flag if title/description looks intentionally misleading; low-confidence extractions surface `SUSPICIOUS_METADATA` task <-- the need for this is very low and adding it risks destabilizing the prompt. We instead built manual correction functionality into INGEST_FAILED Tasks.
+- [x] TouhouDB fuzzy validation: after LLM extraction, run `touhoudb_client.lookup_by_name(title, circle)` to cross-validate; mismatch → `SUSPICIOUS_METADATA` task; match → upsert with merged data
 
 **Task system**
 - [x] Create `lotad/tasks/manager.py` — `TaskManager.create(task_type, title, data, related_song_id=None, related_video_id=None)` writes to `tasks` table; idempotent (don't create duplicate OPEN task for same song+type)
-- [ ] Implement `lotad tasks list` — Rich table showing OPEN tasks sorted by priority; columns: id, type, title, created_at, related entity
-- [ ] Implement `lotad tasks show <id>` — full task detail with data payload formatted per task_type
-- [ ] Implement `lotad tasks resolve <id>` — guided interactive prompt per task_type; writes resolution data to DB; sets status = RESOLVED + resolved_at
-- [ ] Implement `lotad tasks dismiss <id>` — sets status = DISMISSED (used for false positives)
+- [x] Implement `lotad tasks list` — Rich table showing OPEN tasks sorted by priority; columns: id, type, title, created_at, related entity
+- [x] Implement `lotad tasks show <id>` — full task detail with data payload formatted per task_type
+- [x] Implement `lotad tasks resolve <id>` — guided interactive prompt per task_type; writes resolution data to DB; sets status = RESOLVED + resolved_at
+- [x] Implement `lotad tasks dismiss <id>` — sets status = DISMISSED (used for false positives)
 - [x] Task types implemented: `FILL_MISSING_INFO`, `DEDUPLICATE_SONGS`, `INGEST_FAILED`, `DROPPED_VIDEO` — with runbook-style resolution prompts. `MISSING_CIRCLE` was removed (most songs do not have circle directly on the song object; it is instead tied to the albums model). `MISSING_LYRICIST` and `REVIEW_CHARACTER_MAPPING` resolution prompts still pending.
 
 **Metadata integrity checks (added to ingest pipeline)**
