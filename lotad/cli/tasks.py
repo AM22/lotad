@@ -1306,22 +1306,34 @@ async def _run_enrich(
                     last_exc = None
                     break
                 except Exception as exc:
+                    import traceback
+
                     is_transient = isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
-                    # Log URL from httpx exceptions to identify which service timed out
+                    # Fully-qualified name (module.ClassName) to distinguish e.g.
+                    # httpx.ReadTimeout vs requests.exceptions.ReadTimeout vs socket.timeout
+                    exc_name = f"{type(exc).__module__}.{type(exc).__name__}"
+                    # URL from httpx exceptions (not available on socket/requests exceptions)
                     url_hint = ""
                     req = getattr(exc, "request", None)
                     if req is not None:
                         url_hint = f" [{req.url}]"
+                    # Always log full traceback at DEBUG level so it's visible with --log-level DEBUG
+                    logger.debug(
+                        "Task %d failed (attempt %d):\n%s",
+                        tid,
+                        _attempt + 1,
+                        traceback.format_exc(),
+                    )
                     last_exc = exc
                     if is_transient and _attempt < _TASK_RETRIES - 1:
                         console.print(
                             f"[{i}/{total}] #{tid}  {short_title!r}  "
-                            f"[yellow]transient {type(exc).__name__}{url_hint} — will retry[/yellow]"
+                            f"[yellow]transient {exc_name}{url_hint} — will retry[/yellow]"
                         )
                     else:
                         console.print(
                             f"[{i}/{total}] #{tid}  {short_title!r}  "
-                            f"— [red]error: {type(exc).__name__}{url_hint}: {exc!r}[/red]"
+                            f"— [red]error: {exc_name}{url_hint}: {exc!r}[/red]"
                         )
                         break  # non-transient errors don't retry
 

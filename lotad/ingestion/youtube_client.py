@@ -224,6 +224,19 @@ class YouTubeClient:
             # 403 = comments disabled; 404 = video not found — both expected
             logger.debug("commentThreads.list failed for %s: %s", video_id, exc)
             return []
+        except Exception as exc:
+            # Network errors (socket.timeout, ConnectionResetError, SSL errors, etc.)
+            # from the underlying httplib2 transport.  Comments are optional so we
+            # swallow all of these rather than propagating a network error through the
+            # LLM pipeline.  The asyncio.wait_for wrapper in llm_extractor only catches
+            # asyncio.TimeoutError; sync exceptions from this thread bypass it.
+            logger.warning(
+                "commentThreads.list network error for %s (%s: %s) — continuing without comments",
+                video_id,
+                type(exc).__name__,
+                exc,
+            )
+            return []
 
         comments: list[str] = []
         for item in resp.get("items", []):
