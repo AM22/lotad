@@ -1200,6 +1200,7 @@ async def _run_enrich(
     dry_run: bool,
     limit: int,
 ) -> None:
+    import httpx
     import sqlalchemy as sa
 
     from lotad.agents.llm_extractor import LLMExtractor, VideoType
@@ -1275,23 +1276,60 @@ async def _run_enrich(
                 )
                 continue
 
-            try:
-                with engine.connect() as match_conn:
-                    result = await extractor.find_match(
-                        title=video_row.get("title") or "",
-                        description=video_row.get("description") or "",
-                        duration_seconds=video_row.get("duration_seconds"),
-                        channel_name=video_row.get("channel_name"),
-                        is_album_hint=data.get("is_album", False),
-                        conn=match_conn,
-                        youtube_video_id=video_row.get("video_id"),
+            # Task-level retry: back off on network/timeout errors so a brief
+            # TouhouDB or Claude hiccup doesn't permanently skip the task.
+            # Per-request retries (in TouhouDBClient._get) handle individual
+            # transient blips; this outer loop handles the case where the server
+            # is temporarily overloaded and all per-request retries also fail.
+            _TASK_RETRIES = 3
+            _TASK_RETRY_BACKOFF = [0, 15, 45]  # seconds to wait before each attempt
+            result = None
+            last_exc: Exception | None = None
+            for _attempt in range(_TASK_RETRIES):
+                if _TASK_RETRY_BACKOFF[_attempt]:
+                    console.print(
+                        f"  [dim]retrying in {_TASK_RETRY_BACKOFF[_attempt]}s "
+                        f"(attempt {_attempt + 1}/{_TASK_RETRIES})…[/dim]"
                     )
-            except Exception as exc:
-                console.print(
-                    f"[{i}/{total}] #{tid}  {short_title!r}  "
-                    f"— [red]error: {type(exc).__name__}: {exc}[/red]"
-                )
+                    await asyncio.sleep(_TASK_RETRY_BACKOFF[_attempt])
+                try:
+                    with engine.connect() as match_conn:
+                        result = await extractor.find_match(
+                            title=video_row.get("title") or "",
+                            description=video_row.get("description") or "",
+                            duration_seconds=video_row.get("duration_seconds"),
+                            channel_name=video_row.get("channel_name"),
+                            is_album_hint=data.get("is_album", False),
+                            conn=match_conn,
+                            youtube_video_id=video_row.get("video_id"),
+                        )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    is_transient = isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
+                    # Log URL from httpx exceptions to identify which service timed out
+                    url_hint = ""
+                    req = getattr(exc, "request", None)
+                    if req is not None:
+                        url_hint = f" [{req.url}]"
+                    last_exc = exc
+                    if is_transient and _attempt < _TASK_RETRIES - 1:
+                        console.print(
+                            f"[{i}/{total}] #{tid}  {short_title!r}  "
+                            f"[yellow]transient {type(exc).__name__}{url_hint} — will retry[/yellow]"
+                        )
+                    else:
+                        console.print(
+                            f"[{i}/{total}] #{tid}  {short_title!r}  "
+                            f"— [red]error: {type(exc).__name__}{url_hint}: {exc!r}[/red]"
+                        )
+                        break  # non-transient errors don't retry
+
+            if last_exc is not None:
                 continue
+
+            # Small inter-task delay to avoid hammering TouhouDB
+            await asyncio.sleep(0.5)
 
             conf = result.confidence
             conf_color = {"HIGH": "green", "MEDIUM": "yellow", "LOW": "red"}.get(conf, "white")
