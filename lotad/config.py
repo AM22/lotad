@@ -38,8 +38,17 @@ class Settings(BaseSettings):
     touhoudb_base_url: str = Field(
         "https://touhoudb.com/api", description="TouhouDB REST API base URL"
     )
-    touhoudb_request_timeout: float = Field(30.0, description="Per-request timeout in seconds")
-    touhoudb_max_retries: int = Field(5, description="Max retry attempts per request")
+    touhoudb_request_timeout: float = Field(
+        10.0,
+        description=(
+            "Per-request timeout in seconds. TouhouDB should respond in <3s under normal load; "
+            "10s gives a comfortable margin while keeping failure detection fast."
+        ),
+    )
+    touhoudb_max_retries: int = Field(
+        3,
+        description="Max retry attempts per TouhouDB request (tenacity exponential back-off).",
+    )
     touhoudb_circuit_breaker_threshold: int = Field(
         10, description="Consecutive failures before circuit opens"
     )

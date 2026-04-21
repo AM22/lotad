@@ -155,15 +155,27 @@ class TouhouDBClient:
         if self._circuit_breaker.is_open:
             raise CircuitBreakerOpen("TouhouDB circuit breaker is open; skipping network call")
 
+        max_attempts = self._settings.touhoudb_max_retries
         try:
             # AsyncRetrying handles intermediate retry waits + back-off.
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self._settings.touhoudb_max_retries),
+                stop=stop_after_attempt(max_attempts),
                 wait=wait_exponential(multiplier=1, min=1, max=30),
                 retry=retry_if_exception(is_retryable),
                 reraise=True,
             ):
                 with attempt:
+                    attempt_num = attempt.retry_state.attempt_number
+                    if attempt_num > 1:
+                        logger.warning(
+                            "TOUHOUDB: retry %d/%d for %s params=%r",
+                            attempt_num,
+                            max_attempts,
+                            path,
+                            params,
+                        )
+                    else:
+                        logger.debug("TOUHOUDB: GET %s params=%r", path, params)
                     response = await self._http.get(path, params=params)
                     response.raise_for_status()
                     # Record success here — the ``else`` clause on try/except
