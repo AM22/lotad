@@ -403,7 +403,7 @@ def _description_is_sufficient(description: str) -> bool:
 def _normalize_search_title(title: str) -> str:
     """Normalise a song title for use as a TouhouDB search query.
 
-    Two transformations are applied **only to the search query** — the original
+    Transformations applied **only to the search query** — the original
     ``song_title`` is preserved in ``VideoClassification`` for scoring.
 
     1. Strip square-bracket content entirely.  Square brackets in Touhou YouTube
@@ -416,6 +416,16 @@ def _normalize_search_title(title: str) -> str:
        → ``サイアノタイプ``).  When the main title is already Latin the parenthetical
        is kept because it likely designates a remix/variant that IS on TouhouDB
        (e.g. ``MELO☆MELO MELTDOWN!! (Tsukasa Revival Mix)`` stays intact).
+
+    3. Strip ASCII punctuation for more lenient matching.
+
+    4. Collapse spaced-letter titles: ``H E A D L E S S`` → ``HEADLESS``.
+       Some uploaders format titles by inserting a space between every character.
+       With ``nameMatchMode=Words`` each single-letter token becomes an independent
+       search term, effectively returning the entire TouhouDB catalogue and causing
+       ReadTimeout on unfiltered searches.  When every whitespace-separated token
+       is a single character (and there are at least 3 of them) the title is
+       collapsed back to a continuous string before searching.
     """
     # 1. Strip all [...] annotations
     result = re.sub(r"\[.*?\]", "", title)
@@ -432,7 +442,14 @@ def _normalize_search_title(title: str) -> str:
 
     # Collapse extra whitespace left by the removals; fall back to pre-strip value if empty
     stripped = re.sub(r"\s+", " ", stripped).strip()
-    return stripped if stripped else re.sub(r"\s+", " ", result).strip()
+    final = stripped if stripped else re.sub(r"\s+", " ", result).strip()
+
+    # 4. Collapse spaced-letter titles: "H E A D L E S S" → "HEADLESS"
+    tokens = final.split()
+    if len(tokens) >= 3 and all(len(t) == 1 for t in tokens):
+        return "".join(tokens)
+
+    return final
 
 
 def _fuzzy_similarity(a: str, b: str) -> float:
