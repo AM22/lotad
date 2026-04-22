@@ -45,20 +45,27 @@ _YOUTUBE_ID_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?v=|shorts/|embed/))([A-Za-z0-9_-]{11})"
 )
 
-# Fields requested from TouhouDB for full song detail.
+# Fields requested from TouhouDB for full song detail (used during ingestion).
 # Note: Notes is NOT a valid SongOptionalField and causes a 400 if requested.
 # notes is returned in the base response without needing to be listed here.
 _SONG_FIELDS = "Artists,Albums,Tags,PVs,AdditionalNames"
+# Lighter field set used for search/scoring only — drops Tags and PVs which are
+# not needed for candidate scoring and add significant payload for popular songs
+# (a song like "Phantom Ensemble" has hundreds of arrangements, each with multiple
+# PV entries). Reducing payload lowers TouhouDB serialisation time and reduces the
+# chance of ReadTimeout on high-cardinality unfiltered searches.
+_SEARCH_FIELDS = "Artists,Albums,AdditionalNames"
 # Extended fields used when resolving original chains — adds WebLinks so we can
 # detect multiple-original references in notes and unofficial link entries.
 _CHAIN_FIELDS = "Artists,Albums,Tags,PVs,WebLinks,AdditionalNames"
 # Fields requested for album detail (includes Tracks)
 _ALBUM_FIELDS = "Artists,Tags,Tracks,AdditionalNames,Description,ReleaseEvent"
-# Fields requested for artist detail
+# Fields requested for artist detail — AdditionalNames only; Tags are not used
+# during the enrich flow and add unnecessary payload to artist search responses.
 # Valid ArtistOptionalField values: AdditionalNames, ArtistLinks, ArtistLinksReverse,
 # BaseVoicebank, Description, MainPicture, Names, Tags, WebLinks
 # ("Groups" is NOT a valid field — use ArtistLinks for group membership if needed)
-_ARTIST_FIELDS = "AdditionalNames,Tags"
+_ARTIST_FIELDS = "AdditionalNames"
 
 # Matches any touhoudb.com/S/<id> URL (http or https, with or without trailing slash)
 _TOUHOUDB_SONG_RE = re.compile(r"touhoudb\.com/S/(\d+)", re.IGNORECASE)
@@ -591,10 +598,12 @@ class TouhouDBClient:
         # time out at 10s with FavoritedTimes; all return in <1.5s without it.
         # Our scoring re-orders candidates by our own score anyway, so server sort order
         # is irrelevant.
+        # _SEARCH_FIELDS omits Tags and PVs — not needed for scoring and add significant
+        # payload for popular songs (many PV entries per arrangement).
         params: dict[str, Any] = {
             "query": query,
             "nameMatchMode": "Words",
-            "fields": _SONG_FIELDS,
+            "fields": _SEARCH_FIELDS,
             "lang": "Default",
             "maxResults": max_results,
             "getTotalCount": "false",

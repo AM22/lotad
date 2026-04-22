@@ -1180,7 +1180,16 @@ def _resolve_generic(task_id: int, ctx: dict) -> None:
     show_default=True,
     help="Max tasks to process. Implies --all when given without --id.",
 )
-def tasks_enrich(task_id: int | None, enrich_all: bool, dry_run: bool, limit: int | None) -> None:
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show full exception class name and stack trace on errors.",
+)
+def tasks_enrich(
+    task_id: int | None, enrich_all: bool, dry_run: bool, limit: int | None, verbose: bool
+) -> None:
     """Run LLM matching on INGEST_FAILED tasks to find TouhouDB matches."""
     # --limit alone implies --all (it already caps the scope)
     if limit is not None and not task_id:
@@ -1189,7 +1198,13 @@ def tasks_enrich(task_id: int | None, enrich_all: bool, dry_run: bool, limit: in
         console.print("[yellow]Specify --id ID, --all, or --limit N.[/yellow]")
         raise click.Abort() from None
     asyncio.run(
-        _run_enrich(task_id=task_id, enrich_all=enrich_all, dry_run=dry_run, limit=limit or 50)
+        _run_enrich(
+            task_id=task_id,
+            enrich_all=enrich_all,
+            dry_run=dry_run,
+            limit=limit or 50,
+            verbose=verbose,
+        )
     )
 
 
@@ -1236,6 +1251,7 @@ async def _run_enrich(
     enrich_all: bool,
     dry_run: bool,
     limit: int,
+    verbose: bool = False,
 ) -> None:
     import sqlalchemy as sa
 
@@ -1325,18 +1341,23 @@ async def _run_enrich(
                         youtube_video_id=video_row.get("video_id"),
                     )
             except Exception as exc:
-                import traceback
-
                 service = _identify_service(exc)
-                exc_name = f"{type(exc).__module__}.{type(exc).__name__}"
-                req = getattr(exc, "request", None)
-                url_hint = f" [{req.url}]" if req is not None else ""
-                tb = traceback.format_exc()
-                console.print(
-                    f"[{i}/{total}] #{tid}  {short_title!r}  "
-                    f"— [red][{service}] {exc_name}{url_hint}: {exc!r}[/red]"
-                )
-                console.print(f"[dim]{tb}[/dim]")
+                if verbose:
+                    import traceback
+
+                    exc_name = f"{type(exc).__module__}.{type(exc).__name__}"
+                    req = getattr(exc, "request", None)
+                    url_hint = f" [{req.url}]" if req is not None else ""
+                    console.print(
+                        f"[{i}/{total}] #{tid}  {short_title!r}  "
+                        f"— [red][{service}] {exc_name}{url_hint}: {exc!r}[/red]"
+                    )
+                    console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                else:
+                    console.print(
+                        f"[{i}/{total}] #{tid}  {short_title!r}  "
+                        f"— [red][{service}] {type(exc).__name__}[/red]"
+                    )
                 continue
 
             # Small inter-task delay to avoid hammering TouhouDB
