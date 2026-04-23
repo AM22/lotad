@@ -156,8 +156,11 @@ def list_unenriched_ingest_failed(
                 # data->>'enrich_fail_count' is NULL for tasks that have never
                 # been attempted, so the IS NULL branch keeps them eligible.
                 sa.or_(
-                    tasks.c.data["enrich_fail_count"].astext.is_(None),
-                    sa.cast(tasks.c.data["enrich_fail_count"].astext, sa.Integer)
+                    tasks.c.data.op("->>")(sa.literal("enrich_fail_count")).is_(None),
+                    sa.cast(
+                        tasks.c.data.op("->>")(sa.literal("enrich_fail_count")),
+                        sa.Integer,
+                    )
                     < ENRICH_FAIL_LIMIT,
                 ),
             )
