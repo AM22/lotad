@@ -700,9 +700,7 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
     else:
         fail_count = data.get("enrich_fail_count") or 0
         if fail_count >= manager.ENRICH_FAIL_LIMIT:
-            console.print(
-                f"[yellow]LLM enrichment skipped after {fail_count} timeouts.[/yellow]"
-            )
+            console.print(f"[yellow]LLM enrichment skipped after {fail_count} timeouts.[/yellow]")
         else:
             console.print("[yellow]This task has not been enriched by the LLM yet.[/yellow]")
             console.print(
