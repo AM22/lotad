@@ -564,7 +564,7 @@ class TouhouDBClient:
 
         params: dict[str, Any] = {
             "query": query,
-            "nameMatchMode": "Words",
+            "nameMatchMode": "Auto",
             "fields": _ARTIST_FIELDS,
             "lang": "Default",
             "maxResults": max_results,
@@ -594,15 +594,19 @@ class TouhouDBClient:
         """
         # No "sort" param: TouhouDB defaults to relevance ordering, which is fast.
         # sort=FavoritedTimes requires an aggregation JOIN against the favorites table
-        # and reliably causes ReadTimeout on unfiltered searches — tested: 5/6 queries
-        # time out at 10s with FavoritedTimes; all return in <1.5s without it.
-        # Our scoring re-orders candidates by our own score anyway, so server sort order
-        # is irrelevant.
-        # _SEARCH_FIELDS omits Tags and PVs — not needed for scoring and add significant
-        # payload for popular songs (many PV entries per arrangement).
+        # and reliably causes ReadTimeout on unfiltered searches (see PR #40).
+        # Our scoring re-orders candidates by our own score anyway, so server sort
+        # order is irrelevant.
+        #
+        # nameMatchMode=Auto: mirrors what TouhouDB's own search UI uses.  Auto
+        # cascades: Exact → StartsWith → Words, stopping as soon as results are
+        # found.  For common exact/prefix matches this avoids the expensive
+        # full-word-index scan that Words always performs regardless of result count.
+        # _SEARCH_FIELDS omits Tags and PVs — not needed for scoring and add
+        # significant payload for popular songs (many PV entries per arrangement).
         params: dict[str, Any] = {
             "query": query,
-            "nameMatchMode": "Words",
+            "nameMatchMode": "Auto",
             "fields": _SEARCH_FIELDS,
             "lang": "Default",
             "maxResults": max_results,
