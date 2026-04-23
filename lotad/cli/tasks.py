@@ -698,13 +698,44 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
             console.print("[dim]Quit.[/dim]")
 
     else:
-        console.print("[yellow]This task has not been processed by the LLM yet.[/yellow]")
-        console.print(f"  Run [cyan]lotad tasks enrich --id {task_id}[/cyan] first, then resolve.")
+        fail_count = data.get("enrich_fail_count") or 0
+        if fail_count >= manager.ENRICH_FAIL_LIMIT:
+            console.print(
+                f"[yellow]LLM enrichment skipped after {fail_count} timeouts.[/yellow]"
+            )
+        else:
+            console.print("[yellow]This task has not been enriched by the LLM yet.[/yellow]")
+            console.print(
+                f"  You can run [cyan]lotad tasks enrich --id {task_id}[/cyan] first, "
+                f"or resolve manually below."
+            )
         console.print()
-        console.print("[D] Dismiss anyway")
+        console.print("[1] Enter a TouhouDB song ID to ingest directly")
+        console.print("[3] Composite video — enter comma-separated TouhouDB song IDs")
+        console.print("[S] Insert song stub (song not on TouhouDB)")
+        console.print("[D] Dismiss (not Touhou / permanently skip)")
         console.print("[Q] Quit")
         choice = click.prompt("Choice", default="Q").strip().upper()
-        if choice == "D":
+
+        if choice == "1":
+            tdb_id = click.prompt("TouhouDB song ID", type=int)
+            await _do_ingest_single(task_id, data, video, tdb_id)
+        elif choice == "3":
+            raw = click.prompt("Comma-separated TouhouDB song IDs")
+            ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+            await _do_ingest_composite(
+                task_id, data, video, ids, video_type=VideoType.COMPOSITE_TRACKS
+            )
+        elif choice == "S":
+            from lotad.agents.llm_extractor import VideoClassification
+
+            seed = VideoClassification(
+                video_type=VideoType.SINGLE_SONG,
+                song_title=data.get("title", ""),
+            ).model_dump()
+            edited = _prompt_classification_overrides(seed)
+            await _do_ingest_stub(task_id, data, video, edited)
+        elif choice == "D":
             with get_engine().begin() as conn:
                 manager.dismiss_task(conn, task_id)
             console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
@@ -1357,6 +1388,17 @@ async def _run_enrich(
                     console.print(
                         f"[{i}/{total}] #{tid}  {short_title!r}  "
                         f"— [red][{service}] {type(exc).__name__}[/red]"
+                    )
+                # Track consecutive failures so the batch queue can skip tasks
+                # that consistently time out (see manager.ENRICH_FAIL_LIMIT).
+                fail_count = (_get_data(task_row).get("enrich_fail_count") or 0) + 1
+                with engine.begin() as fc_conn:
+                    manager.merge_task_data(fc_conn, tid, {"enrich_fail_count": fail_count})
+                if fail_count >= manager.ENRICH_FAIL_LIMIT:
+                    console.print(
+                        f"  [dim]#{tid} has failed {fail_count} times — "
+                        f"excluded from future batches. "
+                        f"Use `lotad tasks resolve {tid}` to resolve manually.[/dim]"
                     )
                 continue
 

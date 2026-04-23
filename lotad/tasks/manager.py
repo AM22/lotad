@@ -127,12 +127,24 @@ def count_tasks_by_type(
     return {row.task_type: row.cnt for row in rows}
 
 
+# Tasks that time out this many times are excluded from the automatic enrich
+# batch.  They can still be force-enriched with `lotad tasks enrich --id <id>`
+# or resolved manually via `lotad tasks resolve <id>`.
+ENRICH_FAIL_LIMIT = 3
+
+
 def list_unenriched_ingest_failed(
     conn: Connection,
     *,
     limit: int = 50,
 ) -> list[Any]:
-    """Return OPEN INGEST_FAILED tasks that have not yet been LLM-enriched."""
+    """Return OPEN INGEST_FAILED tasks that have not yet been LLM-enriched.
+
+    Tasks that have timed out ``ENRICH_FAIL_LIMIT`` or more times are excluded
+    from the batch queue — they block the front of every run and waste tokens
+    retrying queries that TouhouDB consistently cannot answer.  They remain
+    OPEN so the user can still resolve them manually via ``tasks resolve``.
+    """
     stmt = (
         sa.select(tasks)
         .where(
@@ -140,6 +152,14 @@ def list_unenriched_ingest_failed(
                 tasks.c.task_type == TaskType.INGEST_FAILED,
                 tasks.c.status == TaskStatus.OPEN,
                 tasks.c.llm_enriched_at.is_(None),
+                # Exclude tasks that have already hit the per-task timeout limit.
+                # data->>'enrich_fail_count' is NULL for tasks that have never
+                # been attempted, so the IS NULL branch keeps them eligible.
+                sa.or_(
+                    tasks.c.data["enrich_fail_count"].astext.is_(None),
+                    sa.cast(tasks.c.data["enrich_fail_count"].astext, sa.Integer)
+                    < ENRICH_FAIL_LIMIT,
+                ),
             )
         )
         .order_by(tasks.c.created_at.asc())
