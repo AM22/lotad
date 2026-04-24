@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from lotad.config import get_settings
 
 
-def get_engine():
+def get_engine() -> Engine:
     """Return a SQLAlchemy engine bound to the configured database URL."""
     settings = get_settings()
     return create_engine(
@@ -30,6 +30,6 @@ def get_engine():
     )
 
 
-def get_session_factory():
+def get_session_factory() -> sessionmaker[Session]:
     engine = get_engine()
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)

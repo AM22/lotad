@@ -1,5 +1,7 @@
 """lotad score — scoring and analytics commands (stub)."""
 
+from __future__ import annotations
+
 import click
 
 

@@ -29,6 +29,7 @@ import json
 import logging
 import re as _re
 from pathlib import Path
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import Connection
@@ -196,7 +197,7 @@ class IngestPipeline:
         self._yt = YouTubeClient(self._settings)
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(self, *args: object) -> None:
         await self._tdb.__aexit__(*args)
 
     # ------------------------------------------------------------------
@@ -209,7 +210,7 @@ class IngestPipeline:
         *,
         resume: bool = False,
         limit: int | None = None,
-        progress_callback=None,
+        progress_callback: Any | None = None,
     ) -> dict:
         """
         Ingest all videos in a YouTube playlist.
@@ -339,7 +340,10 @@ class IngestPipeline:
                         "title": item.title,
                         "position": item.position,
                         "playlist_db_id": playlist_db_id,
-                        "note": "YouTube returned a deleted/private stub; video is no longer accessible",
+                        "note": (
+                            "YouTube returned a deleted/private stub;"
+                            " video is no longer accessible"
+                        ),
                     },
                     conn,
                     related_video_id=yt_video_id,
