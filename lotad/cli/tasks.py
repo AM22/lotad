@@ -79,6 +79,21 @@ def _get_data(task_row: Any) -> dict:
     return raw or {}
 
 
+def _llm_status_cell(row: Any) -> str:
+    """Return a Rich-formatted string for the LLM column in `tasks list`."""
+    if not row.get("llm_enriched_at"):
+        return "—"
+    data = _get_data(row)
+    llm_match = data.get("llm_match")
+    if llm_match:
+        conf = llm_match.get("confidence", "")
+        color = {"HIGH": "green", "MEDIUM": "yellow", "LOW": "red"}.get(conf, "white")
+        return f"[{color}]{conf}[/{color}]"
+    if data.get("llm_classification"):
+        return "[red]no match[/red]"
+    return "[green]enriched[/green]"
+
+
 # ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
@@ -145,11 +160,11 @@ def tasks_list(task_type: str | None, status_str: str, limit: int) -> None:
             table.add_column("Title", no_wrap=False, max_width=55)
             table.add_column("Age", width=9)
             if tt == TaskType.INGEST_FAILED:
-                table.add_column("LLM", width=9)
+                table.add_column("LLM", width=10)
 
             for row in rows:
                 if tt == TaskType.INGEST_FAILED:
-                    llm_cell = "[green]enriched[/green]" if row.get("llm_enriched_at") else "—"
+                    llm_cell = _llm_status_cell(row)
                     table.add_row(str(row["id"]), row["title"], _age(row["created_at"]), llm_cell)
                 else:
                     table.add_row(str(row["id"]), row["title"], _age(row["created_at"]))
@@ -564,6 +579,63 @@ def _prompt_classification_overrides(cls: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Timestamp mode helper
+# ---------------------------------------------------------------------------
+
+
+def _prompt_timestamp_mode(
+    count: int,
+    *,
+    hint_timestamps: list[int | None] | None = None,
+) -> list[int | None] | None:
+    """
+    Interactively ask the user how to assign timestamps for composite ingest.
+
+    Returns:
+      - ``None``          → auto-cumulative mode (derive from TouhouDB durations)
+      - list of int|None  → explicit per-track timestamps in seconds
+    """
+    console.print()
+    console.print(f"[bold]Timestamp assignment for {count} track(s):[/bold]")
+
+    has_hints = bool(hint_timestamps and any(t is not None for t in hint_timestamps))
+    if has_hints:
+        assert hint_timestamps is not None
+        hints_str = ", ".join(
+            (f"{t // 60}:{t % 60:02d}" if t is not None else "?") for t in hint_timestamps
+        )
+        console.print(f"  LLM timestamps : {hints_str}")
+        console.print("[L] Use LLM timestamps (above)")
+
+    console.print("[A] Auto — cumulative from TouhouDB song durations (default for albums)")
+    console.print("[M] Manual — enter timestamps in seconds, comma-separated")
+    console.print("[Z] All zero — set every track to 0:00 (mashups / full-video crossfades)")
+
+    default = "L" if has_hints else "A"
+    choice = click.prompt("Timestamp mode", default=default).strip().upper()
+
+    if choice == "L" and has_hints:
+        return hint_timestamps
+    if choice == "M":
+        raw = click.prompt(f"Enter {count} timestamp(s) in seconds (comma-separated)")
+        ts_list: list[int | None] = []
+        for part in raw.split(","):
+            part = part.strip()
+            try:
+                ts_list.append(int(part))
+            except ValueError:
+                ts_list.append(None)
+        # Pad / trim to exactly `count` entries
+        while len(ts_list) < count:
+            ts_list.append(None)
+        return ts_list[:count]
+    if choice == "Z":
+        return [0] * count
+    # "A" or fallback — signal _do_ingest_composite to compute cumulatively
+    return None
+
+
+# ---------------------------------------------------------------------------
 # resolve wizards
 # ---------------------------------------------------------------------------
 
@@ -641,13 +713,14 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
                 track_ids = [r["best_match"]["touhoudb_id"] for r, t in pairs]
                 hint_ts = [t.get("timestamp_seconds") for r, t in pairs] if pairs else None
                 if track_ids:
+                    timestamps = _prompt_timestamp_mode(len(track_ids), hint_timestamps=hint_ts)
                     await _do_ingest_composite(
                         task_id,
                         data,
                         video,
                         track_ids,
                         video_type=VideoType.COMPOSITE_TRACKS,
-                        hint_timestamps=hint_ts,
+                        hint_timestamps=timestamps,
                     )
                 else:
                     console.print(
@@ -662,8 +735,14 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
         elif choice == "3":
             raw = click.prompt("Comma-separated TouhouDB song IDs")
             ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+            timestamps = _prompt_timestamp_mode(len(ids))
             await _do_ingest_composite(
-                task_id, data, video, ids, video_type=VideoType.COMPOSITE_TRACKS
+                task_id,
+                data,
+                video,
+                ids,
+                video_type=VideoType.COMPOSITE_TRACKS,
+                hint_timestamps=timestamps,
             )
         elif choice == "D":
             with get_engine().begin() as conn:
@@ -678,7 +757,18 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
         console.print()
         console.print("[1] Edit fields → insert song stub (no TouhouDB linkage)")
         console.print("[2] Accept as-is → insert song stub")
-        console.print("[3] Enter a TouhouDB song ID to ingest from")
+
+        # Composite videos need multiple IDs; single-song videos need one.
+        vtype_str = llm_cls.get("video_type", "")
+        is_cls_composite = vtype_str in (
+            VideoType.COMPOSITE_TRACKS,
+            VideoType.FULL_ALBUM,
+        )
+        if is_cls_composite:
+            console.print("[3] Enter TouhouDB song IDs (comma-separated) to ingest as composite")
+        else:
+            console.print("[3] Enter a TouhouDB song ID to ingest from")
+
         console.print("[D] Dismiss")
         console.print("[Q] Quit")
         choice = click.prompt("Choice", default="D").strip().upper()
@@ -688,8 +778,21 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
                 llm_cls = _prompt_classification_overrides(llm_cls)
             await _do_ingest_stub(task_id, data, video, llm_cls)
         elif choice == "3":
-            tdb_id = click.prompt("TouhouDB song ID", type=int)
-            await _do_ingest_single(task_id, data, video, tdb_id)
+            if is_cls_composite:
+                raw = click.prompt("Comma-separated TouhouDB song IDs")
+                ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+                timestamps = _prompt_timestamp_mode(len(ids))
+                await _do_ingest_composite(
+                    task_id,
+                    data,
+                    video,
+                    ids,
+                    video_type=VideoType.COMPOSITE_TRACKS,
+                    hint_timestamps=timestamps,
+                )
+            else:
+                tdb_id = click.prompt("TouhouDB song ID", type=int)
+                await _do_ingest_single(task_id, data, video, tdb_id)
         elif choice == "D":
             with get_engine().begin() as conn:
                 manager.dismiss_task(conn, task_id)
@@ -721,8 +824,14 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
         elif choice == "3":
             raw = click.prompt("Comma-separated TouhouDB song IDs")
             ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+            timestamps = _prompt_timestamp_mode(len(ids))
             await _do_ingest_composite(
-                task_id, data, video, ids, video_type=VideoType.COMPOSITE_TRACKS
+                task_id,
+                data,
+                video,
+                ids,
+                video_type=VideoType.COMPOSITE_TRACKS,
+                hint_timestamps=timestamps,
             )
         elif choice == "S":
             from lotad.agents.llm_extractor import VideoClassification
