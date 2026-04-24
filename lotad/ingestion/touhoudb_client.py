@@ -70,6 +70,11 @@ _ARTIST_FIELDS = "AdditionalNames"
 # Matches any touhoudb.com/S/<id> URL (http or https, with or without trailing slash)
 _TOUHOUDB_SONG_RE = re.compile(r"touhoudb\.com/S/(\d+)", re.IGNORECASE)
 
+# テーマ・オブ・イースタンストーリー — many distinct ZUN-composed themes point to this
+# as their originalVersionId, so the chain resolution treats their direct parent as a
+# co-original rather than collapsing everything to this one leaf.
+_EASTERN_STORY_TOUHOUDB_ID = 2445
+
 
 def _extract_youtube_id(url: str) -> str | None:
     """Extract 11-char YouTube video ID from various URL formats."""
@@ -340,6 +345,13 @@ class TouhouDBClient:
         if detail.originalVersionId is None:
             # Leaf node — this is a ZUN original.
             leaf_ids = [song_id]
+
+            # Special case: テーマ・オブ・イースタンストーリー is the source for many
+            # distinct ZUN-composed themes.  Rather than collapsing all of them to this
+            # single leaf, also include the direct parent as a co-original so that each
+            # ZUN remix is credited alongside the ultimate source.
+            if song_id == _EASTERN_STORY_TOUHOUDB_ID and _parent_detail is not None:
+                leaf_ids.append(_parent_detail.id)
 
             # Scan the penultimate node for additional originals.
             if _parent_detail is not None:

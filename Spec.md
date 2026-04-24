@@ -711,6 +711,11 @@ Each bullet below corresponds to roughly one implementable unit of work (think: 
 
 **Data quality backfill** *(planned — to be tackled alongside the character mapper below, since both require external sources beyond TouhouDB)*
 
+- [ ] **Eastern Story original chain backfill** — ~85% of songs were ingested before the `resolve_original_chain` exception for テーマ・オブ・イースタンストーリー (TouhouDB ID 2445, internal `original_songs.id` 112) was added. Their `song_originals` rows link only to 112 where they should also link to the intermediate ZUN original (e.g. Necrofantasia).
+  - New CLI command: `lotad originals backfill-eastern-story [--dry-run]` in `lotad/cli/originals.py`
+  - Query all songs whose `song_originals` exclusively links to the `original_songs` row with `touhoudb_id=2445`; for each song that has a `touhoudb_id`, call `resolve_original_chain` and upsert new `song_originals` rows (existing 112 link kept, parent original added)
+  - Songs without a `touhoudb_id` (LLM/manually resolved) are logged as skipped — they require separate manual re-resolution
+
 - [ ] **`original_songs.stage` backfill** — TouhouDB stage tags are only present on ~20–30% of songs; the remainder land with `stage = NULL`. Backfill by scraping Touhou Wiki track listings (`https://en.touhouwiki.net/wiki/<Game>/Music`) which have authoritative stage→track mappings for every game.
 - [ ] **`original_songs.is_boss` backfill** — TouhouDB does not differentiate boss themes from stage themes; `is_boss` is currently always `false`. Backfill from the same Touhou Wiki track listings (boss themes are explicitly labelled).
 - [ ] **`original_song_characters` confidence upgrade** — characters are currently seeded at `confidence=MEDIUM` from TouhouDB's character artist associations, which are sparse and sometimes wrong. Once `is_boss` and `stage` are backfilled, run the full `CharacterMapper` rules (boss rule → `HIGH`, stage rule → `MEDIUM` with task, LLM fallback → `LOW` with task) to replace the TouhouDB-seeded rows with higher-quality assignments and generate `REVIEW_CHARACTER_MAPPING` tasks for ambiguous cases.
