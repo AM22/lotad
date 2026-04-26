@@ -640,6 +640,19 @@ def _prompt_timestamp_mode(
 # ---------------------------------------------------------------------------
 
 
+def _prompt_video_type_override(current: str) -> VideoType:
+    console.print(f"\nCurrent video type: [bold]{current}[/bold]")
+    console.print("[1] single_song")
+    console.print("[2] composite_tracks")
+    console.print("[3] full_album")
+    choice = click.prompt("New type", default="1").strip()
+    return {
+        "1": VideoType.SINGLE_SONG,
+        "2": VideoType.COMPOSITE_TRACKS,
+        "3": VideoType.FULL_ALBUM,
+    }.get(choice, VideoType.SINGLE_SONG)
+
+
 async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
     task = ctx["task"]
     video = ctx["video"]
@@ -652,133 +665,93 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
         )
     console.print()
 
-    llm_match = data.get("llm_match")
-    llm_cls = data.get("llm_classification") or (
-        llm_match.get("classification") if llm_match else None
-    )
-    has_match = llm_match and llm_match.get("best_match")
-
-    if has_match:
-        best = llm_match["best_match"]
-        conf = llm_match.get("confidence", "?")
-        conf_color = {"HIGH": "green", "MEDIUM": "yellow", "LOW": "red"}.get(conf, "white")
-        console.print(
-            f"LLM Match [[{conf_color}]{conf}[/{conf_color}]]: "
-            f"#{best['touhoudb_id']} {best['name']!r} — {best.get('artist_string', '?')}  "
-            f"({_fmt_duration(best.get('duration_seconds'))})"
+    while True:
+        llm_match = data.get("llm_match")
+        llm_cls = data.get("llm_classification") or (
+            llm_match.get("classification") if llm_match else None
         )
-        console.print()
-        console.print("[1] Accept LLM match → ingest via pipeline")
-        console.print("[2] Enter a different TouhouDB song ID")
-        console.print("[3] Composite video — enter comma-separated TouhouDB song IDs")
-        console.print("[D] Dismiss")
-        console.print("[Q] Quit")
-        choice = click.prompt("Choice", default="1").strip().upper()
+        has_match = llm_match and llm_match.get("best_match")
 
-        if choice == "1":
-            vtype = llm_match.get("video_type")
-            if vtype == VideoType.FULL_ALBUM:
-                track_ids = llm_match.get("album_track_touhoudb_ids") or []
-                if track_ids:
-                    top_tracks = (llm_match.get("classification") or {}).get("tracks") or []
-                    hint_ts = (
-                        [t.get("timestamp_seconds") for t in top_tracks[: len(track_ids)]]
-                        if top_tracks
-                        else None
-                    )
-                    await _do_ingest_composite(
-                        task_id,
-                        data,
-                        video,
-                        track_ids,
-                        video_type=VideoType.FULL_ALBUM,
-                        hint_timestamps=hint_ts,
-                    )
-                else:
-                    console.print(
-                        "[red]No track IDs in LLM match data. "
-                        "Enter song IDs manually via option [3].[/red]"
-                    )
-            elif vtype == VideoType.COMPOSITE_TRACKS:
-                track_results = llm_match.get("track_results") or []
-                top_tracks = (llm_match.get("classification") or {}).get("tracks") or []
-                # Zip before filtering so track_ids[i] and hint_ts[i] stay aligned.
-                # Filtering track_results alone would shift hint indices for any
-                # entry that lacks a best_match.
-                pairs = [
-                    (r, t)
-                    for r, t in zip(track_results, top_tracks, strict=False)
-                    if r.get("best_match")
-                ]
-                track_ids = [r["best_match"]["touhoudb_id"] for r, t in pairs]
-                hint_ts = [t.get("timestamp_seconds") for r, t in pairs] if pairs else None
-                if track_ids:
-                    timestamps = _prompt_timestamp_mode(len(track_ids), hint_timestamps=hint_ts)
-                    await _do_ingest_composite(
-                        task_id,
-                        data,
-                        video,
-                        track_ids,
-                        video_type=VideoType.COMPOSITE_TRACKS,
-                        hint_timestamps=timestamps,
-                    )
-                else:
-                    console.print(
-                        "[red]No matched tracks in LLM data. "
-                        "Enter song IDs manually via option [3].[/red]"
-                    )
-            else:
-                await _do_ingest_single(task_id, data, video, best["touhoudb_id"])
-        elif choice == "2":
-            tdb_id = click.prompt("TouhouDB song ID", type=int)
-            await _do_ingest_single(task_id, data, video, tdb_id)
-        elif choice == "3":
-            raw = click.prompt("Comma-separated TouhouDB song IDs")
-            ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
-            timestamps = _prompt_timestamp_mode(len(ids))
-            await _do_ingest_composite(
-                task_id,
-                data,
-                video,
-                ids,
-                video_type=VideoType.COMPOSITE_TRACKS,
-                hint_timestamps=timestamps,
+        if has_match:
+            best = llm_match["best_match"]
+            conf = llm_match.get("confidence", "?")
+            conf_color = {"HIGH": "green", "MEDIUM": "yellow", "LOW": "red"}.get(conf, "white")
+            console.print(
+                f"LLM Match [[{conf_color}]{conf}[/{conf_color}]]: "
+                f"#{best['touhoudb_id']} {best['name']!r} — {best.get('artist_string', '?')}  "
+                f"({_fmt_duration(best.get('duration_seconds'))})"
             )
-        elif choice == "D":
-            with get_engine().begin() as conn:
-                manager.dismiss_task(conn, task_id)
-            console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
-        else:
-            console.print("[dim]Quit.[/dim]")
+            console.print()
+            console.print("[1] Accept LLM match → ingest via pipeline")
+            console.print("[2] Enter a different TouhouDB song ID")
+            console.print("[3] Composite video — enter comma-separated TouhouDB song IDs")
+            console.print("[4] Change video type classification")
+            console.print("[D] Dismiss")
+            console.print("[Q] Quit")
+            choice = click.prompt("Choice", default="1").strip().upper()
 
-    elif llm_cls:
-        console.print("[yellow]LLM found no TouhouDB match.[/yellow]")
-        _print_classification_summary(llm_cls)
-        console.print()
-        console.print("[1] Edit fields → insert song stub (no TouhouDB linkage)")
-        console.print("[2] Accept as-is → insert song stub")
-
-        # Composite videos need multiple IDs; single-song videos need one.
-        vtype_str = llm_cls.get("video_type", "")
-        is_cls_composite = vtype_str in (
-            VideoType.COMPOSITE_TRACKS,
-            VideoType.FULL_ALBUM,
-        )
-        if is_cls_composite:
-            console.print("[3] Enter TouhouDB song IDs (comma-separated) to ingest as composite")
-        else:
-            console.print("[3] Enter a TouhouDB song ID to ingest from")
-
-        console.print("[D] Dismiss")
-        console.print("[Q] Quit")
-        choice = click.prompt("Choice", default="D").strip().upper()
-
-        if choice in ("1", "2"):
             if choice == "1":
-                llm_cls = _prompt_classification_overrides(llm_cls)
-            await _do_ingest_stub(task_id, data, video, llm_cls)
-        elif choice == "3":
-            if is_cls_composite:
+                vtype = llm_match.get("video_type")
+                if vtype == VideoType.FULL_ALBUM:
+                    track_ids = llm_match.get("album_track_touhoudb_ids") or []
+                    if track_ids:
+                        top_tracks = (llm_match.get("classification") or {}).get("tracks") or []
+                        hint_ts = (
+                            [t.get("timestamp_seconds") for t in top_tracks[: len(track_ids)]]
+                            if top_tracks
+                            else None
+                        )
+                        await _do_ingest_composite(
+                            task_id,
+                            data,
+                            video,
+                            track_ids,
+                            video_type=VideoType.FULL_ALBUM,
+                            hint_timestamps=hint_ts,
+                        )
+                        return
+                    else:
+                        console.print(
+                            "[red]No track IDs in LLM match data. "
+                            "Enter song IDs manually via option [3].[/red]"
+                        )
+                elif vtype == VideoType.COMPOSITE_TRACKS:
+                    track_results = llm_match.get("track_results") or []
+                    top_tracks = (llm_match.get("classification") or {}).get("tracks") or []
+                    # Zip before filtering so track_ids[i] and hint_ts[i] stay aligned.
+                    # Filtering track_results alone would shift hint indices for any
+                    # entry that lacks a best_match.
+                    pairs = [
+                        (r, t)
+                        for r, t in zip(track_results, top_tracks, strict=False)
+                        if r.get("best_match")
+                    ]
+                    track_ids = [r["best_match"]["touhoudb_id"] for r, t in pairs]
+                    hint_ts = [t.get("timestamp_seconds") for r, t in pairs] if pairs else None
+                    if track_ids:
+                        timestamps = _prompt_timestamp_mode(len(track_ids), hint_timestamps=hint_ts)
+                        await _do_ingest_composite(
+                            task_id,
+                            data,
+                            video,
+                            track_ids,
+                            video_type=VideoType.COMPOSITE_TRACKS,
+                            hint_timestamps=timestamps,
+                        )
+                        return
+                    else:
+                        console.print(
+                            "[red]No matched tracks in LLM data. "
+                            "Enter song IDs manually via option [3].[/red]"
+                        )
+                else:
+                    await _do_ingest_single(task_id, data, video, best["touhoudb_id"])
+                    return
+            elif choice == "2":
+                tdb_id = click.prompt("TouhouDB song ID", type=int)
+                await _do_ingest_single(task_id, data, video, tdb_id)
+                return
+            elif choice == "3":
                 raw = click.prompt("Comma-separated TouhouDB song IDs")
                 ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
                 timestamps = _prompt_timestamp_mode(len(ids))
@@ -790,62 +763,154 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
                     video_type=VideoType.COMPOSITE_TRACKS,
                     hint_timestamps=timestamps,
                 )
+                return
+            elif choice == "4":
+                new_vtype = _prompt_video_type_override(llm_match.get("video_type", "?"))
+                llm_match["video_type"] = new_vtype
+                if llm_cls:
+                    llm_cls["video_type"] = new_vtype
+                data["llm_match"] = llm_match
+                update: dict = {"llm_match": llm_match}
+                if "llm_classification" in data:
+                    data["llm_classification"] = llm_cls
+                    update["llm_classification"] = llm_cls
+                with get_engine().begin() as conn:
+                    manager.merge_task_data(conn, task_id, update)
+                console.print(f"[green]Classification updated to {new_vtype}.[/green]")
+                console.print()
+            elif choice == "D":
+                with get_engine().begin() as conn:
+                    manager.dismiss_task(conn, task_id)
+                console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
+                return
             else:
+                console.print("[dim]Quit.[/dim]")
+                return
+
+        elif llm_cls:
+            console.print("[yellow]LLM found no TouhouDB match.[/yellow]")
+            _print_classification_summary(llm_cls)
+            console.print()
+            console.print("[1] Edit fields → insert song stub (no TouhouDB linkage)")
+            console.print("[2] Accept as-is → insert song stub")
+
+            # Composite videos need multiple IDs; single-song videos need one.
+            vtype_str = llm_cls.get("video_type", "")
+            is_cls_composite = vtype_str in (
+                VideoType.COMPOSITE_TRACKS,
+                VideoType.FULL_ALBUM,
+            )
+            if is_cls_composite:
+                console.print("[3] Enter TouhouDB song IDs (comma-separated) to ingest as composite")
+            else:
+                console.print("[3] Enter a TouhouDB song ID to ingest from")
+
+            console.print("[4] Change video type classification")
+            console.print("[D] Dismiss")
+            console.print("[Q] Quit")
+            choice = click.prompt("Choice", default="D").strip().upper()
+
+            if choice in ("1", "2"):
+                if choice == "1":
+                    llm_cls = _prompt_classification_overrides(llm_cls)
+                await _do_ingest_stub(task_id, data, video, llm_cls)
+                return
+            elif choice == "3":
+                if is_cls_composite:
+                    raw = click.prompt("Comma-separated TouhouDB song IDs")
+                    ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+                    timestamps = _prompt_timestamp_mode(len(ids))
+                    await _do_ingest_composite(
+                        task_id,
+                        data,
+                        video,
+                        ids,
+                        video_type=VideoType.COMPOSITE_TRACKS,
+                        hint_timestamps=timestamps,
+                    )
+                else:
+                    tdb_id = click.prompt("TouhouDB song ID", type=int)
+                    await _do_ingest_single(task_id, data, video, tdb_id)
+                return
+            elif choice == "4":
+                new_vtype = _prompt_video_type_override(llm_cls.get("video_type", "?"))
+                llm_cls["video_type"] = new_vtype
+                data["llm_classification"] = llm_cls
+                with get_engine().begin() as conn:
+                    manager.merge_task_data(conn, task_id, {"llm_classification": llm_cls})
+                console.print(f"[green]Classification updated to {new_vtype}.[/green]")
+                console.print()
+            elif choice == "D":
+                with get_engine().begin() as conn:
+                    manager.dismiss_task(conn, task_id)
+                console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
+                return
+            else:
+                console.print("[dim]Quit.[/dim]")
+                return
+
+        else:
+            fail_count = data.get("enrich_fail_count") or 0
+            if fail_count >= manager.ENRICH_FAIL_LIMIT:
+                console.print(f"[yellow]LLM enrichment skipped after {fail_count} timeouts.[/yellow]")
+            else:
+                console.print("[yellow]This task has not been enriched by the LLM yet.[/yellow]")
+                console.print(
+                    f"  You can run [cyan]lotad tasks enrich --id {task_id}[/cyan] first, "
+                    f"or resolve manually below."
+                )
+            console.print()
+            console.print("[1] Enter a TouhouDB song ID to ingest directly")
+            console.print("[3] Composite video — enter comma-separated TouhouDB song IDs")
+            console.print("[4] Change video type classification")
+            console.print("[S] Insert song stub (song not on TouhouDB)")
+            console.print("[D] Dismiss (not Touhou / permanently skip)")
+            console.print("[Q] Quit")
+            choice = click.prompt("Choice", default="Q").strip().upper()
+
+            if choice == "1":
                 tdb_id = click.prompt("TouhouDB song ID", type=int)
                 await _do_ingest_single(task_id, data, video, tdb_id)
-        elif choice == "D":
-            with get_engine().begin() as conn:
-                manager.dismiss_task(conn, task_id)
-            console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
-        else:
-            console.print("[dim]Quit.[/dim]")
+                return
+            elif choice == "3":
+                raw = click.prompt("Comma-separated TouhouDB song IDs")
+                ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+                timestamps = _prompt_timestamp_mode(len(ids))
+                await _do_ingest_composite(
+                    task_id,
+                    data,
+                    video,
+                    ids,
+                    video_type=VideoType.COMPOSITE_TRACKS,
+                    hint_timestamps=timestamps,
+                )
+                return
+            elif choice == "4":
+                new_vtype = _prompt_video_type_override("(none)")
+                new_cls: dict = {"video_type": new_vtype}
+                data["llm_classification"] = new_cls
+                with get_engine().begin() as conn:
+                    manager.merge_task_data(conn, task_id, {"llm_classification": new_cls})
+                console.print(f"[green]Classification set to {new_vtype}.[/green]")
+                console.print()
+            elif choice == "S":
+                from lotad.agents.llm_extractor import VideoClassification
 
-    else:
-        fail_count = data.get("enrich_fail_count") or 0
-        if fail_count >= manager.ENRICH_FAIL_LIMIT:
-            console.print(f"[yellow]LLM enrichment skipped after {fail_count} timeouts.[/yellow]")
-        else:
-            console.print("[yellow]This task has not been enriched by the LLM yet.[/yellow]")
-            console.print(
-                f"  You can run [cyan]lotad tasks enrich --id {task_id}[/cyan] first, "
-                f"or resolve manually below."
-            )
-        console.print()
-        console.print("[1] Enter a TouhouDB song ID to ingest directly")
-        console.print("[3] Composite video — enter comma-separated TouhouDB song IDs")
-        console.print("[S] Insert song stub (song not on TouhouDB)")
-        console.print("[D] Dismiss (not Touhou / permanently skip)")
-        console.print("[Q] Quit")
-        choice = click.prompt("Choice", default="Q").strip().upper()
-
-        if choice == "1":
-            tdb_id = click.prompt("TouhouDB song ID", type=int)
-            await _do_ingest_single(task_id, data, video, tdb_id)
-        elif choice == "3":
-            raw = click.prompt("Comma-separated TouhouDB song IDs")
-            ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
-            timestamps = _prompt_timestamp_mode(len(ids))
-            await _do_ingest_composite(
-                task_id,
-                data,
-                video,
-                ids,
-                video_type=VideoType.COMPOSITE_TRACKS,
-                hint_timestamps=timestamps,
-            )
-        elif choice == "S":
-            from lotad.agents.llm_extractor import VideoClassification
-
-            seed = VideoClassification(
-                video_type=VideoType.SINGLE_SONG,
-                song_title=data.get("title", ""),
-            ).model_dump()
-            edited = _prompt_classification_overrides(seed)
-            await _do_ingest_stub(task_id, data, video, edited)
-        elif choice == "D":
-            with get_engine().begin() as conn:
-                manager.dismiss_task(conn, task_id)
-            console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
+                seed = VideoClassification(
+                    video_type=VideoType.SINGLE_SONG,
+                    song_title=data.get("title", ""),
+                ).model_dump()
+                edited = _prompt_classification_overrides(seed)
+                await _do_ingest_stub(task_id, data, video, edited)
+                return
+            elif choice == "D":
+                with get_engine().begin() as conn:
+                    manager.dismiss_task(conn, task_id)
+                console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
+                return
+            else:
+                console.print("[dim]Quit.[/dim]")
+                return
 
 
 async def _do_ingest_single(task_id: int, data: dict, video_row: Any, touhoudb_id: int) -> None:
