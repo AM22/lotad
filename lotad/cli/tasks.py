@@ -801,7 +801,9 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
                 VideoType.FULL_ALBUM,
             )
             if is_cls_composite:
-                console.print("[3] Enter TouhouDB song IDs (comma-separated) to ingest as composite")
+                console.print(
+                    "[3] Enter TouhouDB song IDs (comma-separated) to ingest as composite"
+                )
             else:
                 console.print("[3] Enter a TouhouDB song ID to ingest from")
 
@@ -852,7 +854,9 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
         else:
             fail_count = data.get("enrich_fail_count") or 0
             if fail_count >= manager.ENRICH_FAIL_LIMIT:
-                console.print(f"[yellow]LLM enrichment skipped after {fail_count} timeouts.[/yellow]")
+                console.print(
+                    f"[yellow]LLM enrichment skipped after {fail_count} timeouts.[/yellow]"
+                )
             else:
                 console.print("[yellow]This task has not been enriched by the LLM yet.[/yellow]")
                 console.print(
