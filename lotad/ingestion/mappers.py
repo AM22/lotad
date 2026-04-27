@@ -926,12 +926,14 @@ def ingest_song_from_llm_classification(
         # artists.name has no unique constraint (touhoudb_id does), so we must
         # check for an existing row by name first to avoid creating duplicates.
         existing = conn.execute(
-            sa.select(artists.c.id).where(
+            sa.select(artists.c.id)
+            .where(
                 sa.or_(
                     artists.c.name.ilike(name),
                     artists.c.name_romanized.ilike(name),
                 )
-            ).limit(1)
+            )
+            .limit(1)
         ).one_or_none()
         if existing is not None:
             artist_id = existing[0]
