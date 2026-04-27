@@ -545,11 +545,11 @@ def _prompt_classification_overrides(cls: dict) -> dict:
 
     for key, label in _CLS_STRING_FIELDS:
         current = result.get(key) or ""
-        prompt_label = f"  {label}"
+        hint = " (YYYY-MM-DD)" if key == "release_date" else ""
         # Show current value in brackets so the user can see it without retyping
         display = f"[{current}]" if current else "[empty]"
-        console.print(f"{prompt_label} {display}")
-        new_val = click.prompt(f"  → {label}", default=current, show_default=False)
+        console.print(f"  {label}{hint} {display}")
+        new_val = click.prompt(f"  → {label}{hint}", default=current, show_default=False)
         result[key] = new_val.strip() or None
 
     for key, label in _CLS_LIST_FIELDS:
