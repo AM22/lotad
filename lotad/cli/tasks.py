@@ -545,11 +545,11 @@ def _prompt_classification_overrides(cls: dict) -> dict:
 
     for key, label in _CLS_STRING_FIELDS:
         current = result.get(key) or ""
-        prompt_label = f"  {label}"
+        hint = " (YYYY-MM-DD)" if key == "release_date" else ""
         # Show current value in brackets so the user can see it without retyping
         display = f"[{current}]" if current else "[empty]"
-        console.print(f"{prompt_label} {display}")
-        new_val = click.prompt(f"  → {label}", default=current, show_default=False)
+        console.print(f"  {label}{hint} {display}")
+        new_val = click.prompt(f"  → {label}{hint}", default=current, show_default=False)
         result[key] = new_val.strip() or None
 
     for key, label in _CLS_LIST_FIELDS:
@@ -794,13 +794,13 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
             console.print("[1] Edit fields → insert song stub (no TouhouDB linkage)")
             console.print("[2] Accept as-is → insert song stub")
 
-            # Composite videos need multiple IDs; single-song videos need one.
+            # Label option [3] based on the specific composite sub-type.
             vtype_str = llm_cls.get("video_type", "")
-            is_cls_composite = vtype_str in (
-                VideoType.COMPOSITE_TRACKS,
-                VideoType.FULL_ALBUM,
-            )
-            if is_cls_composite:
+            is_full_album = vtype_str == VideoType.FULL_ALBUM
+            is_composite_tracks = vtype_str == VideoType.COMPOSITE_TRACKS
+            if is_full_album:
+                console.print("[3] Enter a TouhouDB album ID to ingest as full album")
+            elif is_composite_tracks:
                 console.print(
                     "[3] Enter TouhouDB song IDs (comma-separated) to ingest as composite"
                 )
@@ -818,7 +818,36 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict) -> None:
                 await _do_ingest_stub(task_id, data, video, llm_cls)
                 return
             elif choice == "3":
-                if is_cls_composite:
+                if is_full_album:
+                    from lotad.config import get_settings
+                    from lotad.ingestion.touhoudb_client import TouhouDBClient
+
+                    album_id = click.prompt("TouhouDB album ID", type=int)
+                    settings = get_settings()
+                    async with TouhouDBClient.from_settings(settings) as tdb:
+                        album = await tdb.get_album(album_id)
+                    track_ids = [t.song.id for t in album.tracks if t.song is not None]
+                    console.print(
+                        f"[green]Album:[/green] #{album.id} {album.name!r} "
+                        f"— {len(track_ids)} tracks"
+                    )
+                    for i, t in enumerate(album.tracks, 1):
+                        name = t.song.name if t.song else "(no song)"
+                        sid = f"#{t.song.id}" if t.song else "—"
+                        console.print(f"  {i:>2}. {sid}  {name}")
+                    if not track_ids:
+                        console.print("[red]No linked song IDs found on this album.[/red]")
+                        continue
+                    timestamps = _prompt_timestamp_mode(len(track_ids))
+                    await _do_ingest_composite(
+                        task_id,
+                        data,
+                        video,
+                        track_ids,
+                        video_type=VideoType.FULL_ALBUM,
+                        hint_timestamps=timestamps,
+                    )
+                elif is_composite_tracks:
                     raw = click.prompt("Comma-separated TouhouDB song IDs")
                     ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
                     timestamps = _prompt_timestamp_mode(len(ids))
