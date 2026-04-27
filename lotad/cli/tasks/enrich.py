@@ -264,9 +264,7 @@ async def _run_enrich(
                     if ok:
                         with engine.begin() as conn:
                             yt_db_id = conn.execute(
-                                sa.select(yt_table.c.id).where(
-                                    yt_table.c.video_id == item.video_id
-                                )
+                                sa.select(yt_table.c.id).where(yt_table.c.video_id == item.video_id)
                             ).scalar_one_or_none()
                             db_song_id = None
                             if yt_db_id:

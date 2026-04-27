@@ -80,8 +80,7 @@ def tasks_list(task_type: str | None, status_str: str, limit: int) -> None:
                 unenriched = sum(1 for r in rows if not r.get("llm_enriched_at"))
                 if unenriched > 0:
                     subtitle = (
-                        f"[dim]{unenriched} unenriched"
-                        " — run `lotad tasks enrich --limit 100`[/dim]"
+                        f"[dim]{unenriched} unenriched — run `lotad tasks enrich --limit 100`[/dim]"
                     )
                     console.print(
                         Panel(table, title=title_str, border_style="blue", subtitle=subtitle)

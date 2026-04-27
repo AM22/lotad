@@ -198,9 +198,7 @@ def _render_suspicious_metadata_section(lines: list[str], data: dict[str, Any]) 
     if tdb_dur and yt_dur:
         diff_pct = (yt_dur - tdb_dur) / tdb_dur * 100
         sign = "+" if diff_pct >= 0 else ""
-        lines.append(
-            f"  YouTube   : {_fmt_duration(yt_dur)} ({yt_dur}s)  ← {sign}{diff_pct:.1f}%"
-        )
+        lines.append(f"  YouTube   : {_fmt_duration(yt_dur)} ({yt_dur}s)  ← {sign}{diff_pct:.1f}%")
     else:
         lines.append(f"  YouTube   : {_fmt_duration(yt_dur)} ({yt_dur}s)")
     lines.append("")
