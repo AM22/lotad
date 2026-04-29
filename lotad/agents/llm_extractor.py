@@ -521,8 +521,6 @@ def _album_score(candidate: SongDetail, album_title: str) -> float:
     for album in candidate.albums:
         if album_title_lower in album.name.lower():
             return 1.0
-        # 0.85: high enough to catch abbreviated titles, low enough to reject
-        # unrelated albums with similar short prefixes (empirically tuned).
         if _fuzzy_similarity(album_title, album.name) > 0.85:
             return 0.85
     return 0.0
