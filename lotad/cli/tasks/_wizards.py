@@ -81,6 +81,7 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
                             video_type=VideoType.FULL_ALBUM,
                             hint_timestamps=hint_ts,
                         )
+                        return
                     else:
                         console.print(
                             "[red]No track IDs in LLM match data. "
@@ -109,6 +110,7 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
                             video_type=VideoType.COMPOSITE_TRACKS,
                             hint_timestamps=timestamps,
                         )
+                        return
                     else:
                         console.print(
                             "[red]No matched tracks in LLM data. "
@@ -116,7 +118,7 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
                         )
                 else:
                     await _do_ingest_single(task_id, data, video, best["touhoudb_id"])
-                return
+                    return
             elif choice == "2":
                 tdb_id = click.prompt("TouhouDB song ID", type=int)
                 await _do_ingest_single(task_id, data, video, tdb_id)
@@ -136,8 +138,18 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
                 return
             elif choice == "4":
                 new_vtype = _prompt_video_type_override(llm_match.get("video_type", "?"))
-                data["llm_match"]["video_type"] = new_vtype
-                continue
+                llm_match["video_type"] = new_vtype
+                if llm_cls:
+                    llm_cls["video_type"] = new_vtype
+                data["llm_match"] = llm_match
+                update: dict[str, Any] = {"llm_match": llm_match}
+                if "llm_classification" in data:
+                    data["llm_classification"] = llm_cls
+                    update["llm_classification"] = llm_cls
+                with get_engine().begin() as conn:
+                    manager.merge_task_data(conn, task_id, update)
+                console.print(f"[green]Classification updated to {new_vtype}.[/green]")
+                console.print()
             elif choice == "D":
                 with get_engine().begin() as conn:
                     manager.dismiss_task(conn, task_id)
@@ -167,6 +179,7 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
             else:
                 console.print("[3] Enter a TouhouDB song ID to ingest from")
 
+            console.print("[4] Change video type classification")
             console.print("[D] Dismiss")
             console.print("[Q] Quit")
             choice = click.prompt("Choice", default="D").strip().upper()
@@ -175,8 +188,10 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
                 if choice == "1":
                     llm_cls = _prompt_classification_overrides(llm_cls)
                 await _do_ingest_stub(task_id, data, video, llm_cls)
+                return
             elif choice == "3":
                 if is_full_album:
+                    # circular: avoids top-level import of TouhouDBClient in a CLI wizard
                     from lotad.config import get_settings
                     from lotad.ingestion.touhoudb_client import TouhouDBClient
 
@@ -220,13 +235,23 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
                 else:
                     tdb_id = click.prompt("TouhouDB song ID", type=int)
                     await _do_ingest_single(task_id, data, video, tdb_id)
+                return
+            elif choice == "4":
+                new_vtype = _prompt_video_type_override(llm_cls.get("video_type", "?"))
+                llm_cls["video_type"] = new_vtype
+                data["llm_classification"] = llm_cls
+                with get_engine().begin() as conn:
+                    manager.merge_task_data(conn, task_id, {"llm_classification": llm_cls})
+                console.print(f"[green]Classification updated to {new_vtype}.[/green]")
+                console.print()
             elif choice == "D":
                 with get_engine().begin() as conn:
                     manager.dismiss_task(conn, task_id)
                 console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
+                return
             else:
                 console.print("[dim]Quit.[/dim]")
-            return
+                return
 
         else:
             fail_count = data.get("enrich_fail_count") or 0
@@ -243,6 +268,7 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
             console.print()
             console.print("[1] Enter a TouhouDB song ID to ingest directly")
             console.print("[3] Composite video — enter comma-separated TouhouDB song IDs")
+            console.print("[4] Change video type classification")
             console.print("[S] Insert song stub (song not on TouhouDB)")
             console.print("[D] Dismiss (not Touhou / permanently skip)")
             console.print("[Q] Quit")
@@ -251,6 +277,7 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
             if choice == "1":
                 tdb_id = click.prompt("TouhouDB song ID", type=int)
                 await _do_ingest_single(task_id, data, video, tdb_id)
+                return
             elif choice == "3":
                 raw = click.prompt("Comma-separated TouhouDB song IDs")
                 ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
@@ -263,6 +290,15 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
                     video_type=VideoType.COMPOSITE_TRACKS,
                     hint_timestamps=timestamps,
                 )
+                return
+            elif choice == "4":
+                new_vtype = _prompt_video_type_override("(none)")
+                new_cls: dict[str, Any] = {"video_type": new_vtype}
+                data["llm_classification"] = new_cls
+                with get_engine().begin() as conn:
+                    manager.merge_task_data(conn, task_id, {"llm_classification": new_cls})
+                console.print(f"[green]Classification set to {new_vtype}.[/green]")
+                console.print()
             elif choice == "S":
                 seed = VideoClassification(
                     video_type=VideoType.SINGLE_SONG,
@@ -270,11 +306,12 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
                 ).model_dump()
                 edited = _prompt_classification_overrides(seed)
                 await _do_ingest_stub(task_id, data, video, edited)
+                return
             elif choice == "D":
                 with get_engine().begin() as conn:
                     manager.dismiss_task(conn, task_id)
                 console.print(f"[dim]Dismissed task #{task_id}.[/dim]")
-            return
+                return
 
 
 def _resolve_suspicious_metadata(task_id: int, ctx: dict[str, Any]) -> None:
