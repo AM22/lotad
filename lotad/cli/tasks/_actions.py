@@ -75,11 +75,11 @@ def _prompt_classification_overrides(cls: dict[str, Any]) -> dict[str, Any]:
 
     for key, label in _CLS_STRING_FIELDS:
         current = result.get(key) or ""
-        prompt_label = f"  {label}"
+        hint = " (YYYY-MM-DD)" if key == "release_date" else ""
         # Show current value in brackets so the user can see it without retyping
         display = f"[{current}]" if current else "[empty]"
-        console.print(f"{prompt_label} {display}")
-        new_val = click.prompt(f"  → {label}", default=current, show_default=False)
+        console.print(f"  {label}{hint} {display}")
+        new_val = click.prompt(f"  → {label}{hint}", default=current, show_default=False)
         result[key] = new_val.strip() or None
 
     for key, label in _CLS_LIST_FIELDS:
@@ -158,6 +158,19 @@ def _prompt_timestamp_mode(
         return [0] * count
     # "A" or fallback — signal _do_ingest_composite to compute cumulatively
     return None
+
+
+def _prompt_video_type_override(current: str) -> VideoType:
+    console.print(f"\nCurrent video type: [bold]{current}[/bold]")
+    console.print("[1] single_song")
+    console.print("[2] composite_tracks")
+    console.print("[3] full_album")
+    choice = click.prompt("New type", default="1").strip()
+    return {
+        "1": VideoType.SINGLE_SONG,
+        "2": VideoType.COMPOSITE_TRACKS,
+        "3": VideoType.FULL_ALBUM,
+    }.get(choice, VideoType.SINGLE_SONG)
 
 
 async def _do_ingest_single(

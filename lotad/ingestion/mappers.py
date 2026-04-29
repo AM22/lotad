@@ -926,7 +926,14 @@ def ingest_song_from_llm_classification(
         # artists.name has no unique constraint (touhoudb_id does), so we must
         # check for an existing row by name first to avoid creating duplicates.
         existing = conn.execute(
-            sa.select(artists.c.id).where(artists.c.name == name).limit(1)
+            sa.select(artists.c.id)
+            .where(
+                sa.or_(
+                    artists.c.name.ilike(name),
+                    artists.c.name_romanized.ilike(name),
+                )
+            )
+            .limit(1)
         ).one_or_none()
         if existing is not None:
             artist_id = existing[0]
@@ -956,21 +963,31 @@ def ingest_song_from_llm_classification(
         _upsert_stub_artist(name, ArtistType.INDIVIDUAL, SongRole.LYRICIST)
 
     # Link original songs by name-matching against our original_songs table.
-    # We use ILIKE for case-insensitive matching and substring fallback so that
-    # common romanisation variants ("Faith is for the Transient People" vs the
-    # Japanese name) still connect when possible.
+    # We check both name (Japanese) and name_romanized with ILIKE and substring
+    # fallback so that English-only extractions (e.g. "Love-Colored Master Spark")
+    # still resolve when the DB has the romanized form but not a Japanese match.
     for orig_name in original_song_names:
         orig_row = conn.execute(
             sa.select(original_songs.c.id).where(original_songs.c.name.ilike(orig_name))
         ).one_or_none()
         if orig_row is None:
-            # Try substring match in both directions
+            orig_row = conn.execute(
+                sa.select(original_songs.c.id).where(
+                    original_songs.c.name_romanized.ilike(orig_name)
+                )
+            ).one_or_none()
+        if orig_row is None:
+            # Substring fallback in both directions across name and name_romanized
             orig_row = conn.execute(
                 sa.select(original_songs.c.id).where(
                     sa.or_(
                         original_songs.c.name.ilike(f"%{orig_name}%"),
+                        original_songs.c.name_romanized.ilike(f"%{orig_name}%"),
                         sa.cast(orig_name, sa.Text).ilike(
                             sa.func.concat("%", original_songs.c.name, "%")
+                        ),
+                        sa.cast(orig_name, sa.Text).ilike(
+                            sa.func.concat("%", original_songs.c.name_romanized, "%")
                         ),
                     )
                 )
