@@ -1,5 +1,7 @@
 """LOTAD CLI entry point."""
 
+from __future__ import annotations
+
 import click
 
 from lotad.cli.db import db

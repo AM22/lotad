@@ -68,8 +68,15 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
+ignore = [
+    "ANN401",  # Any is legitimate at SQLAlchemy row and Click option boundaries
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/*" = ["ANN", "E501", "I"]  # migration files: relaxed typing and line length
+"tests/*" = ["ANN"]  # test functions and fixtures don't require type annotations
+"lotad/agents/llm_extractor.py" = ["E501", "ANN401"]  # long prompt strings; Any used for inner helper
 
 [tool.ruff.lint.isort]
 known-first-party = ["lotad"]
