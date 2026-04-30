@@ -1,5 +1,7 @@
 """lotad sync — sync commands (stub)."""
 
+from __future__ import annotations
+
 import click
 
 

@@ -577,7 +577,11 @@ def _score_song_candidate(
 
     breakdown["duration"] = _duration_score(candidate.lengthSeconds, video_duration)
 
-    # Weighted sum (skip zero-weight dimensions when query field is absent)
+    # Weighted sum — weights are empirically tuned on TouhouDB data.
+    # Title dominates (0.35) because it's the most reliable LLM extraction.
+    # Circle and album are secondary signals (0.25 / 0.20) that break ties.
+    # Duration (0.20) catches wrong-song false positives (e.g. instrumentals vs. vocal cuts).
+    # Missing fields drop their weight entirely so partial matches still score fairly.
     weight_title = 0.35 if title_q else 0.0
     weight_circle = 0.25 if circle_q else 0.0
     weight_album = 0.20 if album_q else 0.0

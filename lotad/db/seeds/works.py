@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from decimal import Decimal
 
-from sqlalchemy import insert, select
+from sqlalchemy import Engine, insert, select
 
 from lotad.db.models import works
 from lotad.db.session import get_engine
@@ -519,7 +519,7 @@ BOOKS = [
 ]
 
 
-def seed(engine=None) -> None:
+def seed(engine: Engine | None = None) -> None:
     if engine is None:
         engine = get_engine()
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sys
 
-from sqlalchemy import insert, select
+from sqlalchemy import Engine, insert, select
 
 from lotad.db.models import playlists, scoring_configurations
 from lotad.db.session import get_engine
@@ -130,7 +130,7 @@ SCORING_CONFIGURATIONS = [
 ]
 
 
-def seed(engine=None) -> None:
+def seed(engine: Engine | None = None) -> None:
     if engine is None:
         engine = get_engine()
 
