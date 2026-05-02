@@ -42,6 +42,22 @@ class Settings(BaseSettings):
     touhoudb_circuit_breaker_threshold: int = Field(
         10, description="Consecutive failures before circuit opens"
     )
+    touhoudb_username: str | None = Field(
+        None,
+        description=(
+            "TouhouDB username for the contribution (write) flow. The password is "
+            "prompted interactively at `lotad contrib login` and never persisted; "
+            "only the resulting session cookie is stored to disk."
+        ),
+    )
+    touhoudb_session_path: str = Field(
+        ".cache/touhoudb_session.json",
+        description="Path where the authenticated TouhouDB session is persisted between commands.",
+    )
+    touhoudb_edit_user_agent: str = Field(
+        "LOTAD-contrib/0.1 (+https://github.com/AM22/lotad)",
+        description="User-Agent for write traffic; distinguished from read-side ingestion.",
+    )
 
     normalization_ttl_hours: int = Field(
         24, description="Hours before normalization metrics are considered stale"
