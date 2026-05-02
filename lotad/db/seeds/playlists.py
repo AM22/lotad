@@ -9,6 +9,8 @@ Playlist hierarchy (descending quality / weight):
   3. REVAL          — songs under revaluation (lower tier)
   4. playlist 3     — saved songs (~5/10); evaluated and liked but below REVAL bar
   5. eval           — unlistened evaluation queue (not yet scored)
+  6. unsaved        — listened but consciously not kept; sync moves dropped
+                     low-tier entries here. Has no real YouTube playlist.
 """
 
 from __future__ import annotations
@@ -52,6 +54,14 @@ PLAYLISTS = [
         "name": "eval",
         "youtube_playlist_id": "PLuDYUKEqeoawK20u7vX3c6HTnn3w-9oXw",
         "display_order": 5,
+    },
+    {
+        # Synthetic playlist: songs listened to but consciously not saved.
+        # Not a real YouTube playlist — sync writes here when low-tier entries
+        # disappear from the user's playlists.
+        "name": "unsaved",
+        "youtube_playlist_id": "__lotad_unsaved__",
+        "display_order": 6,
     },
 ]
 
@@ -97,6 +107,7 @@ SCORING_CONFIGURATIONS = [
             "REVAL": 4,
             "playlist 3": 1,
             "eval": 0,
+            "unsaved": 0,
         },
         "is_default": True,
     },
@@ -112,6 +123,7 @@ SCORING_CONFIGURATIONS = [
             "REVAL": 7,
             "playlist 3": 5,
             "eval": 0,
+            "unsaved": 0,
         },
         "is_default": False,
     },
@@ -124,6 +136,7 @@ SCORING_CONFIGURATIONS = [
             "REVAL": 1,
             "playlist 3": 1,
             "eval": 0,
+            "unsaved": 0,
         },
         "is_default": False,
     },

@@ -52,6 +52,15 @@ class Settings(BaseSettings):
         description="Path to resume token file for interrupted ingestion runs",
     )
 
+    sync_checkpoint_path: str = Field(
+        ".lotad_sync_checkpoint.json",
+        description=(
+            "Path to resume token file for interrupted sync runs. "
+            "Separate from ingestion checkpoint to avoid collisions when "
+            "an initial ingest and a sync run on the same playlist share state."
+        ),
+    )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

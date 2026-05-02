@@ -86,3 +86,42 @@ Once the song is identified:
 2. Manually insert a row into `songs` and link it.
 3. Mark the task `RESOLVED` with a note on what the video was.
 4. If the video is truly unidentifiable, mark it `DISMISSED`.
+
+---
+
+## Bulk metadata refresh queries
+
+`lotad sync refresh-metadata --csv path.csv` accepts a CSV with one `song_id`
+column. Generate the input by running these queries in Supabase and using
+"Export as CSV":
+
+### Eastern Story chain backfill (one-time, M5 leftover)
+
+Songs ingested before the テーマ・オブ・イースタンストーリー exception in
+`resolve_original_chain` was added.  Their `song_originals` rows link only to
+`original_songs.touhoudb_id = 2445` and are missing the intermediate ZUN
+parent (Necrofantasia, etc.).
+
+```sql
+SELECT s.id AS song_id
+FROM songs s
+JOIN song_originals so ON so.song_id = s.id
+JOIN original_songs o   ON o.id = so.original_song_id
+WHERE o.touhoudb_id = 2445
+  AND s.touhoudb_id IS NOT NULL
+GROUP BY s.id
+HAVING COUNT(*) = 1;
+```
+
+Re-run the metadata refresh after `lotad originals scrape` (so the
+intermediate originals exist in `original_songs`).
+
+### Other one-off pulls
+
+Use the same pattern: write a query that returns `song_id`, export CSV, run
+`lotad sync refresh-metadata --csv path.csv`.  Or use the built-in filter
+presets:
+
+- `--filter missing-lyricist` — songs with `has_lyrics=true` and no LYRICIST credit
+- `--filter zero-duration`    — songs with NULL or 0 `duration_seconds`
+- `--filter stub-retry`       — stub songs (no `touhoudb_id`) with non-ORIGINAL `song_type`
