@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import click
 
+from lotad.cli.contrib import contrib
 from lotad.cli.db import db
 from lotad.cli.ingest import ingest
 from lotad.cli.originals import originals
@@ -18,6 +19,7 @@ def cli() -> None:
     """LOTAD — Local Ordered Touhou Arrangements Database."""
 
 
+cli.add_command(contrib)
 cli.add_command(db)
 cli.add_command(ingest)
 cli.add_command(originals)
