@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
 from lotad.config import get_settings
-from lotad.db.models import TaskStatus, TaskType, tasks
+from lotad.db.models import AppearanceType, ConfidenceLevel, TaskStatus, TaskType, tasks
 from lotad.db.session import get_engine
 from lotad.ingestion.mappers import (
     link_original_song_characters,
@@ -22,6 +22,23 @@ from lotad.ingestion.mappers import (
 )
 from lotad.ingestion.touhoudb_client import TouhouDBClient
 from lotad.ingestion.touhoudb_models import SongDetail
+from lotad.ingestion.touhouwiki_client import TouhouWikiClient
+from lotad.ingestion.touhouwiki_parser import (
+    extract_japanese_title,
+    parse_section_heading,
+)
+from lotad.ingestion.wiki_enrichment import (
+    create_fill_missing_info_task,
+    create_review_character_mapping_task,
+    get_work_by_short_name,
+    link_character_to_original,
+    list_originals_for_work,
+    match_character_by_name,
+    match_original_song,
+    update_original_song_stage_boss,
+    upsert_character_work,
+)
+from lotad.ingestion.wiki_game_slugs import GAMES, GAMES_BY_SHORT_NAME, GAMES_BY_SLUG, WikiGame
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -218,4 +235,371 @@ def _print_summary(stats: dict[str, int], *, dry_run: bool) -> None:
         f"  Characters linked        : {stats['characters_linked']}\n"
         f"  Songs without work match : {stats['no_work']}\n"
         f"  Tasks resolved           : {stats['tasks_resolved']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Enrich command — Touhou Wiki backfill of stage / is_boss / characters
+# ---------------------------------------------------------------------------
+
+
+@originals.command("enrich")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print intended updates without writing to the database.",
+)
+@click.option(
+    "--game",
+    "only_game",
+    default=None,
+    type=str,
+    help=(
+        "Run for a single game only — accepts a wiki slug "
+        "(e.g. Embodiment_of_Scarlet_Devil) or a works.short_name (e.g. EoSD)."
+    ),
+)
+@click.option(
+    "--no-spell-cards",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip per-stage spell-card fetches — heading-derived enrichment only. "
+        "Faster and avoids any MEDIUM-confidence character links."
+    ),
+)
+def enrich(dry_run: bool, only_game: str | None, no_spell_cards: bool) -> None:
+    """Backfill stage / is_boss / characters on original_songs from Touhou Wiki.
+
+    Walks ``List_by_Song/<game>`` headings (and per-stage spell-card pages)
+    to fill in fields TouhouDB does not provide:
+
+    \b
+      - original_songs.stage         (TouhouDB tags cover ~30% of songs)
+      - original_songs.is_boss       (TouhouDB does not differentiate)
+      - original_song_characters     (HIGH from boss-theme headings,
+                                      MEDIUM from stage spell-card owners)
+
+    Also opportunistically upserts ``character_works`` rows for boss/extra
+    encounters — feeding the Spec §M5 character_works-driven rule for free.
+
+    Stage-theme character mappings always surface a REVIEW_CHARACTER_MAPPING
+    task so the user can confirm/correct (e.g. add midbosses without spell
+    cards like Lily White / Daiyousei).
+    """
+    asyncio.run(_run_enrich(dry_run=dry_run, only_game=only_game, no_spell_cards=no_spell_cards))
+
+
+async def _run_enrich(*, dry_run: bool, only_game: str | None, no_spell_cards: bool) -> None:
+    settings = get_settings()
+    engine = get_engine()
+
+    games = _select_games(only_game)
+    if not games:
+        raise click.BadParameter(f"Unknown game: {only_game!r}")
+
+    if dry_run:
+        console.print("[yellow]DRY RUN — no changes will be written[/yellow]")
+    if no_spell_cards:
+        console.print("[dim]Spell-card lookups disabled (--no-spell-cards)[/dim]")
+
+    totals: dict[str, int] = {
+        "themes_matched": 0,
+        "themes_unmatched": 0,
+        "stage_updates": 0,
+        "is_boss_updates": 0,
+        "char_links_high": 0,
+        "char_links_medium": 0,
+        "char_unresolved": 0,
+        "tasks_review_character": 0,
+        "tasks_fill_missing": 0,
+        "games_processed": 0,
+        "games_skipped_no_work": 0,
+        "games_skipped_no_page": 0,
+    }
+
+    async with TouhouWikiClient.from_settings(settings) as client:
+        for game in games:
+            console.rule(f"[bold cyan]{game.works_short_name}[/bold cyan]  ({game.wiki_slug})")
+            game_stats = await _enrich_one_game(
+                client=client,
+                game=game,
+                engine=engine,
+                dry_run=dry_run,
+                no_spell_cards=no_spell_cards,
+            )
+            for key, value in game_stats.items():
+                totals[key] = totals.get(key, 0) + value
+
+    _print_enrich_summary(totals, dry_run=dry_run)
+
+
+def _select_games(only_game: str | None) -> list[WikiGame]:
+    if only_game is None:
+        return list(GAMES)
+    if only_game in GAMES_BY_SLUG:
+        return [GAMES_BY_SLUG[only_game]]
+    if only_game in GAMES_BY_SHORT_NAME:
+        return [GAMES_BY_SHORT_NAME[only_game]]
+    return []
+
+
+async def _enrich_one_game(
+    *,
+    client: TouhouWikiClient,
+    game: WikiGame,
+    engine: sa.Engine,
+    dry_run: bool,
+    no_spell_cards: bool,
+) -> dict[str, int]:
+    stats: dict[str, int] = {
+        "themes_matched": 0,
+        "themes_unmatched": 0,
+        "stage_updates": 0,
+        "is_boss_updates": 0,
+        "char_links_high": 0,
+        "char_links_medium": 0,
+        "char_unresolved": 0,
+        "tasks_review_character": 0,
+        "tasks_fill_missing": 0,
+        "games_processed": 0,
+        "games_skipped_no_work": 0,
+        "games_skipped_no_page": 0,
+    }
+
+    # Resolve the work_id once per game (read-only).
+    with engine.connect() as conn:
+        work_id = get_work_by_short_name(game.works_short_name, conn)
+    if work_id is None:
+        console.print(
+            f"  [yellow]skipped[/yellow]: no works row for short_name={game.works_short_name!r}"
+        )
+        stats["games_skipped_no_work"] = 1
+        return stats
+
+    sections = await client.get_song_listing(game.wiki_slug)
+    if sections is None:
+        console.print("  [yellow]skipped[/yellow]: wiki page not found")
+        stats["games_skipped_no_page"] = 1
+        return stats
+
+    stats["games_processed"] = 1
+
+    # Build the candidate pool once per game.
+    with engine.connect() as conn:
+        candidates = list_originals_for_work(work_id, conn)
+
+    # Per-stage cache so we only fetch each spell-card page at most once,
+    # even if multiple non-boss themes share the same stage (rare, but
+    # cheap insurance).
+    spell_card_owners_cache: dict[int, list[str] | None] = {}
+
+    for heading_line, body in sections.items():
+        parsed = parse_section_heading(heading_line, final_stage_number=game.final_stage_number)
+        if parsed is None:
+            continue
+
+        japanese_title = extract_japanese_title(body)
+        if japanese_title is None:
+            # No bold name under the heading — usually a placeholder section
+            # or a heading with no theme below it.  Skip silently.
+            continue
+
+        original_song_id = match_original_song(candidates, japanese_title)
+        if original_song_id is None:
+            stats["themes_unmatched"] += 1
+            console.print(f"  [red]?[/red] {heading_line!r} — no match for {japanese_title!r}")
+            if not dry_run:
+                with engine.begin() as conn:
+                    if create_fill_missing_info_task(
+                        title=(
+                            f"Wiki theme not in DB: {japanese_title!r} ({game.works_short_name})"
+                        ),
+                        data={
+                            "work_id": work_id,
+                            "work_short_name": game.works_short_name,
+                            "wiki_slug": game.wiki_slug,
+                            "wiki_heading": heading_line,
+                            "japanese_title": japanese_title,
+                            "stage": parsed.stage,
+                            "is_boss": parsed.is_boss,
+                            "wiki_character_name": parsed.character_name,
+                            "source": "touhouwiki_enrich",
+                        },
+                        conn=conn,
+                    ):
+                        stats["tasks_fill_missing"] += 1
+            continue
+
+        stats["themes_matched"] += 1
+
+        if dry_run:
+            char_str = f" character={parsed.character_name!r}" if parsed.character_name else ""
+            midboss_str = " (midboss)" if parsed.is_midboss else ""
+            console.print(
+                f"  [green]match[/green] {japanese_title!r} → "
+                f"stage={parsed.stage} is_boss={parsed.is_boss}{char_str}{midboss_str}"
+            )
+            if parsed.character_name:
+                stats["char_links_high"] += 1
+        else:
+            with engine.begin() as conn:
+                stage_changed, is_boss_changed = update_original_song_stage_boss(
+                    original_song_id, parsed.stage, parsed.is_boss, conn
+                )
+                if stage_changed:
+                    stats["stage_updates"] += 1
+                if is_boss_changed:
+                    stats["is_boss_updates"] += 1
+
+                if parsed.character_name:
+                    character_id = match_character_by_name(parsed.character_name, conn)
+                    if character_id is None:
+                        stats["char_unresolved"] += 1
+                        console.print(
+                            f"  [red]?[/red] character not in DB: "
+                            f"{parsed.character_name!r} ({heading_line})"
+                        )
+                    else:
+                        outcome = link_character_to_original(
+                            original_song_id,
+                            character_id,
+                            ConfidenceLevel.HIGH,
+                            conn,
+                        )
+                        if outcome in {"inserted", "upgraded"}:
+                            stats["char_links_high"] += 1
+                        if parsed.is_boss:
+                            upsert_character_work(character_id, work_id, AppearanceType.BOSS, conn)
+                        elif parsed.is_midboss:
+                            upsert_character_work(
+                                character_id, work_id, AppearanceType.MIDBOSS, conn
+                            )
+
+        # Spell-card-derived stage-theme characters — only for non-boss
+        # stage themes on games with the spell-card system.
+        is_stage_theme = 1 <= parsed.stage <= 7 and not parsed.is_boss and not parsed.is_midboss
+        if is_stage_theme and game.has_spell_cards and not no_spell_cards:
+            await _link_spell_card_owners(
+                client=client,
+                game=game,
+                engine=engine,
+                original_song_id=original_song_id,
+                work_id=work_id,
+                stage=parsed.stage,
+                heading_line=heading_line,
+                japanese_title=japanese_title,
+                cache=spell_card_owners_cache,
+                stats=stats,
+                dry_run=dry_run,
+            )
+
+    console.print(
+        f"  [green]done[/green]: matched={stats['themes_matched']} "
+        f"unmatched={stats['themes_unmatched']} "
+        f"stage_updates={stats['stage_updates']} "
+        f"is_boss_updates={stats['is_boss_updates']} "
+        f"chars_HIGH={stats['char_links_high']} "
+        f"chars_MEDIUM={stats['char_links_medium']}"
+    )
+    return stats
+
+
+async def _link_spell_card_owners(
+    *,
+    client: TouhouWikiClient,
+    game: WikiGame,
+    engine: sa.Engine,
+    original_song_id: int,
+    work_id: int,
+    stage: int,
+    heading_line: str,
+    japanese_title: str,
+    cache: dict[int, list[str] | None],
+    stats: dict[str, int],
+    dry_run: bool,
+) -> None:
+    """Fetch spell-card owners for a stage and link them at MEDIUM confidence.
+
+    Always raises a REVIEW_CHARACTER_MAPPING task per the M5 plan, even when
+    spell-card owners resolve cleanly: midbosses without spell cards (Lily
+    White, Daiyousei, etc.) won't appear via the API and need manual review.
+    """
+    if stage not in cache:
+        cache[stage] = await client.get_spell_card_owners(game.wiki_slug, stage)
+    owner_names = cache[stage]
+    if owner_names is None:
+        return
+
+    # Dedupe while preserving first-seen order for stable task data payloads.
+    seen: set[str] = set()
+    unique_owners: list[str] = []
+    for n in owner_names:
+        if n not in seen:
+            seen.add(n)
+            unique_owners.append(n)
+
+    candidate_ids: list[tuple[str, int | None]] = []
+    if not dry_run:
+        with engine.begin() as conn:
+            for owner in unique_owners:
+                cid = match_character_by_name(owner, conn)
+                candidate_ids.append((owner, cid))
+                if cid is None:
+                    stats["char_unresolved"] += 1
+                    continue
+                outcome = link_character_to_original(
+                    original_song_id, cid, ConfidenceLevel.MEDIUM, conn
+                )
+                if outcome in {"inserted", "upgraded"}:
+                    stats["char_links_medium"] += 1
+
+            inserted = create_review_character_mapping_task(
+                title=(
+                    f"Review characters for {japanese_title!r} "
+                    f"({game.works_short_name} stage {stage})"
+                ),
+                data={
+                    "original_song_id": original_song_id,
+                    "work_id": work_id,
+                    "work_short_name": game.works_short_name,
+                    "wiki_slug": game.wiki_slug,
+                    "wiki_heading": heading_line,
+                    "japanese_title": japanese_title,
+                    "stage": stage,
+                    "spell_card_owners": unique_owners,
+                    "note": (
+                        "Spell-card owners include both boss and midbosses; "
+                        "midbosses without spell cards (e.g. Lily White, Daiyousei) "
+                        "are not captured automatically and may need to be added."
+                    ),
+                    "source": "touhouwiki_enrich",
+                },
+                conn=conn,
+            )
+            if inserted:
+                stats["tasks_review_character"] += 1
+    else:
+        # Dry-run summary line per stage theme.
+        stats["char_links_medium"] += len(unique_owners)
+        console.print(f"  [dim]stage {stage}[/dim] {japanese_title!r} → owners={unique_owners!r}")
+
+
+def _print_enrich_summary(stats: dict[str, int], *, dry_run: bool) -> None:
+    prefix = "[yellow]DRY RUN[/yellow] — " if dry_run else ""
+    console.print(
+        f"\n{prefix}[bold]Enrich done.[/bold]\n"
+        f"  Games processed              : {stats['games_processed']}\n"
+        f"  Games skipped (no work row)  : {stats['games_skipped_no_work']}\n"
+        f"  Games skipped (no wiki page) : {stats['games_skipped_no_page']}\n"
+        f"  Themes matched               : {stats['themes_matched']}\n"
+        f"  Themes unmatched             : {stats['themes_unmatched']}\n"
+        f"  Stage updates                : {stats['stage_updates']}\n"
+        f"  is_boss updates              : {stats['is_boss_updates']}\n"
+        f"  Character links (HIGH)       : {stats['char_links_high']}\n"
+        f"  Character links (MEDIUM)     : {stats['char_links_medium']}\n"
+        f"  Unresolved character names   : {stats['char_unresolved']}\n"
+        f"  REVIEW_CHARACTER_MAPPING tasks: {stats['tasks_review_character']}\n"
+        f"  FILL_MISSING_INFO tasks      : {stats['tasks_fill_missing']}"
     )
