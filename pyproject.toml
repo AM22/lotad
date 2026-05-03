@@ -17,6 +17,7 @@ dependencies = [
     "httpx>=0.27",
     "tenacity>=8.3",
     "hishel>=0.0.30,<1.0",          # RFC-7234 HTTP caching for httpx (1.x has breaking API changes)
+    "mwparserfromhell>=0.6",        # MediaWiki wikitext parser — robust spell-card template extraction
 
     # LLM + structured output
     "anthropic>=0.30",
