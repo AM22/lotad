@@ -100,7 +100,7 @@ column. Generate the input by running these queries in Supabase and using
 Songs ingested before the テーマ・オブ・イースタンストーリー exception in
 `resolve_original_chain` was added.  Their `song_originals` rows link only to
 `original_songs.touhoudb_id = 2445` and are missing the intermediate ZUN
-parent (Necrofantasia, etc.).
+parent (A Dream More Scarlet Than Red, Snow or Cherry Petal, etc.).
 
 ```sql
 SELECT s.id AS song_id
