@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from lotad.ingestion.touhoudb_client import TouhouDBClient
 from lotad.ingestion.touhoudb_models import SongDetail
 
 
@@ -17,8 +18,6 @@ def _song(id: int, original_version_id: int | None) -> SongDetail:
 async def test_resolve_original_chain_eastern_story_includes_parent():
     """When the chain resolves to テーマ・オブ・イースタンストーリー (TouhouDB ID 2445),
     the direct parent is also returned as a co-original."""
-    from lotad.ingestion.touhoudb_client import TouhouDBClient
-
     # Chain: fan arrangement (999) → ZUN remix (500, originalVersionId=2445)
     #        → Eastern Story (2445, originalVersionId=None)
     side_effects = {
@@ -30,7 +29,7 @@ async def test_resolve_original_chain_eastern_story_includes_parent():
     async def fake_get_song(song_id, **_kwargs):
         return side_effects[song_id]
 
-    async def fake_fetch_notes(song_id):
+    async def fake_fetch_notes(song_id, *, strict=False):
         return None
 
     with (
@@ -48,8 +47,6 @@ async def test_resolve_original_chain_eastern_story_includes_parent():
 @pytest.mark.asyncio
 async def test_resolve_original_chain_non_eastern_story_unaffected():
     """A normal chain that does NOT end at 2445 should return only the leaf."""
-    from lotad.ingestion.touhoudb_client import TouhouDBClient
-
     side_effects = {
         100: _song(100, original_version_id=200),
         200: _song(200, original_version_id=None),
@@ -58,7 +55,7 @@ async def test_resolve_original_chain_non_eastern_story_unaffected():
     async def fake_get_song(song_id, **_kwargs):
         return side_effects[song_id]
 
-    async def fake_fetch_notes(song_id):
+    async def fake_fetch_notes(song_id, *, strict=False):
         return None
 
     with (
@@ -75,7 +72,6 @@ async def test_resolve_original_chain_non_eastern_story_unaffected():
 @pytest.mark.asyncio
 async def test_resolve_original_chain_eastern_story_direct_parent_none():
     """If the chain starts directly at Eastern Story (no parent), only 2445 is returned."""
-    from lotad.ingestion.touhoudb_client import TouhouDBClient
 
     async def fake_get_song(song_id, **_kwargs):
         return _song(2445, original_version_id=None)

@@ -233,38 +233,33 @@ def map_song_to_db(detail: SongDetail, conn: Connection) -> int:
     additional = [n.strip() for n in detail.additionalNames.split(",") if n.strip()]
     title_romanized = additional[0] if additional else None
 
-    # 1. Upsert the song row
+    values = {
+        "title": detail.name,
+        "title_romanized": title_romanized,
+        "duration_seconds": detail.lengthSeconds,
+        "has_lyrics": has_lyrics,
+        "is_original_composition": is_orig,
+        "song_type": song_type,
+        "publish_date": _parse_publish_date(detail.publishDate),
+        "notes": (detail.notes.all_text() or None) if detail.notes else None,
+        "touhoudb_url": f"https://touhoudb.com/S/{detail.id}",
+    }
+    changed = sa.or_(*(songs.c[key].is_distinct_from(value) for key, value in values.items()))
     stmt = (
         pg_insert(songs)
-        .values(
-            touhoudb_id=detail.id,
-            title=detail.name,
-            title_romanized=title_romanized,
-            duration_seconds=detail.lengthSeconds,
-            has_lyrics=has_lyrics,
-            is_original_composition=is_orig,
-            song_type=song_type,
-            publish_date=_parse_publish_date(detail.publishDate),
-            notes=detail.notes,
-            touhoudb_url=f"https://touhoudb.com/S/{detail.id}",
-        )
+        .values(touhoudb_id=detail.id, **values)
         .on_conflict_do_update(
             index_elements=["touhoudb_id"],
             set_={
-                "title": detail.name,
-                "title_romanized": title_romanized,
-                "duration_seconds": detail.lengthSeconds,
-                "has_lyrics": has_lyrics,
-                "is_original_composition": is_orig,
-                "song_type": song_type,
-                "publish_date": _parse_publish_date(detail.publishDate),
-                "notes": detail.notes,
-                "updated_at": sa.func.now(),
+                **values,
+                "updated_at": sa.case((changed, sa.func.now()), else_=songs.c.updated_at),
             },
         )
         .returning(songs.c.id)
     )
     song_id: int = conn.execute(stmt).scalar_one()
+
+    previous_links = _song_metadata_links(song_id, conn)
 
     # 2. Replace artist credits and character links.
     # Delete-then-reinsert (within the same transaction) ensures stale credits
@@ -277,8 +272,19 @@ def map_song_to_db(detail: SongDetail, conn: Connection) -> int:
     conn.execute(song_tags.delete().where(song_tags.c.song_id == song_id))
     _upsert_song_tags(detail.tags, song_id, conn)
 
+    if previous_links != _song_metadata_links(song_id, conn):
+        conn.execute(songs.update().where(songs.c.id == song_id).values(updated_at=sa.func.now()))
+
     logger.debug("Upserted song id=%d touhoudb_id=%d %r", song_id, detail.id, detail.name)
     return song_id
+
+
+def _song_metadata_links(song_id: int, conn: Connection) -> list[set[tuple[Any, ...]]]:
+    """Read owned associations so unchanged refreshes retain their timestamp."""
+    return [
+        {tuple(row) for row in conn.execute(sa.select(table).where(table.c.song_id == song_id))}
+        for table in (song_artists, song_characters, song_tags)
+    ]
 
 
 def _upsert_song_character(
@@ -535,6 +541,8 @@ def link_song_originals(
     song_id: int,
     original_touhoudb_ids: list[int],
     conn: Connection,
+    *,
+    is_manual: bool = False,
 ) -> list[int]:
     """
     For each TouhouDB original song ID in ``original_touhoudb_ids``, find the
@@ -549,10 +557,8 @@ def link_song_originals(
     ``touhoudb_id = NULL``.  Once ``lotad originals scrape`` has been run,
     ``touhoudb_id`` is populated and this function will correctly link songs.
     """
-    from lotad.db.models import song_originals  # avoid circular at module level
-
     linked: list[int] = []
-    for tdb_id in original_touhoudb_ids:
+    for tdb_id in dict.fromkeys(original_touhoudb_ids):
         row = conn.execute(
             sa.select(original_songs.c.id).where(original_songs.c.touhoudb_id == tdb_id)
         ).one_or_none()
@@ -561,8 +567,11 @@ def link_song_originals(
             continue
         conn.execute(
             pg_insert(song_originals)
-            .values(song_id=song_id, original_song_id=row.id)
-            .on_conflict_do_nothing()
+            .values(song_id=song_id, original_song_id=row.id, is_manual=is_manual)
+            .on_conflict_do_update(
+                index_elements=["song_id", "original_song_id"],
+                set_={"is_manual": sa.or_(song_originals.c.is_manual, sa.literal(is_manual))},
+            )
         )
         linked.append(row.id)
     return linked
@@ -995,7 +1004,7 @@ def ingest_song_from_llm_classification(
         if orig_row is not None:
             conn.execute(
                 pg_insert(song_originals)
-                .values(song_id=song_id, original_song_id=orig_row[0])
+                .values(song_id=song_id, original_song_id=orig_row[0], is_manual=True)
                 .on_conflict_do_nothing()
             )
             logger.debug("Linked original_song id=%d to stub song %d", orig_row[0], song_id)

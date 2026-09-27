@@ -32,13 +32,15 @@ def _snap(yt_ids: list[str], db_ids: list[str]) -> _PlaylistSnapshot:
         youtube_playlist_id="PL_X",
         yt_items={vid: _item(vid) for vid in yt_ids},
         db_rows={
-            vid: {
-                "playlist_song_id": 100 + i,
-                "song_id": 200 + i,
-                "yt_db_id": 300 + i,
-                "video_id": vid,
-                "is_available": True,
-            }
+            vid: [
+                {
+                    "playlist_song_id": 100 + i,
+                    "song_id": 200 + i,
+                    "yt_db_id": 300 + i,
+                    "video_id": vid,
+                    "is_available": True,
+                }
+            ]
             for i, vid in enumerate(db_ids)
         },
     )
@@ -102,3 +104,12 @@ def test_csv_parsing_skips_blanks_and_garbage(tmp_path: Path) -> None:
     p = tmp_path / "ids.csv"
     p.write_text("song_id\n7\n\n  \nnot-an-int\n42\n", encoding="utf-8")
     assert read_song_ids_from_csv(p) == [7, 42]
+
+
+def test_diff_partial_snapshot_never_removes_unseen_videos() -> None:
+    snap = _snap(["a", "new"], ["a", "unseen"])
+    snap.complete = False
+    diff = _compute_diff(snap)
+    assert diff.removed_video_ids == set()
+    assert diff.added_video_ids == {"new"}
+    assert diff.kept_video_ids == {"a"}

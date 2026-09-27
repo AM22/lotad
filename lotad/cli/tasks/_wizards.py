@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 import click
@@ -23,7 +22,7 @@ from lotad.cli.tasks._actions import (
 from lotad.cli.tasks._shared import _CONFIDENCE_COLOR, _fmt_duration, _get_data, console
 from lotad.db.models import playlist_songs as ps_table
 from lotad.db.session import get_engine
-from lotad.sync.playlist_sync import resolve_dropped_video_to_unsaved
+from lotad.sync.playlist_sync import dismiss_dropped_video, resolve_dropped_video_to_unsaved
 from lotad.tasks import manager
 
 
@@ -40,7 +39,7 @@ async def _resolve_ingest_failed(task_id: int, ctx: dict[str, Any]) -> None:
     console.print()
 
     while True:
-        llm_match = data.get("llm_match")
+        llm_match = data.get("llm_match") or {}
         llm_cls = data.get("llm_classification") or (
             llm_match.get("classification") if llm_match else None
         )
@@ -475,15 +474,22 @@ def _resolve_dropped_video(task_id: int, ctx: dict[str, Any]) -> None:
         console.print(f"Video: {video.get('video_id')} — {video.get('title', '?')!r}")
     if reason:
         console.print(f"Reason: {reason}")
+    if data.get("playlist_name"):
+        console.print(f"Playlist: {data['playlist_name']}")
+    if data.get("position") is not None:
+        console.print(f"Playlist position: {data['position'] + 1}")
     console.print()
 
     # Check for a previously linked song
-    linked_song_id = None
-    if task["related_video_id"] is not None:
+    linked_song_id = task["related_song_id"]
+    if linked_song_id is None and task["related_video_id"] is not None:
         with get_engine().connect() as conn:
             linked_song_id = conn.execute(
                 sa.select(ps_table.c.song_id)
-                .where(ps_table.c.youtube_video_id == task["related_video_id"])
+                .where(
+                    ps_table.c.youtube_video_id == task["related_video_id"],
+                    ps_table.c.removed_at.is_(None),
+                )
                 .limit(1)
             ).scalar_one_or_none()
 
@@ -526,20 +532,17 @@ def _resolve_dropped_video(task_id: int, ctx: dict[str, Any]) -> None:
             console.print(f"[green]Moved to unsaved; task #{task_id} resolved.[/green]")
         else:
             console.print(
-                "[yellow]Could not locate playlist_songs row to move "
-                "(missing playlist_song_id in task data).[/yellow]"
+                "[yellow]No active row still matches this dropped upload; task left open.[/yellow]"
             )
     elif choice == "D":
         with get_engine().begin() as conn:
-            ps_id = data.get("playlist_song_id")
-            if ps_id is not None:
-                conn.execute(
-                    ps_table.update()
-                    .where(ps_table.c.id == ps_id)
-                    .values(removed_at=datetime.now(UTC))
-                )
-            manager.dismiss_task(conn, task_id, note="soft-deleted on drop approval")
-        console.print(f"[dim]Soft-deleted row; task #{task_id} dismissed.[/dim]")
+            ok = dismiss_dropped_video(conn, task_id)
+        if ok:
+            console.print(f"[dim]Soft-deleted matching rows; task #{task_id} dismissed.[/dim]")
+        else:
+            console.print(
+                "[yellow]No active row still matches this dropped upload; task left open.[/yellow]"
+            )
     elif choice == "I":
         with get_engine().begin() as conn:
             manager.dismiss_task(conn, task_id)
@@ -563,7 +566,8 @@ def _resolve_fill_missing_info(task_id: int, ctx: dict[str, Any]) -> None:
     choice = click.prompt("Choice", default="Q").strip().upper()
 
     if choice == "R":
-        _resolve_original_song_chain_tasks()
+        with get_engine().begin() as conn:
+            _resolve_original_song_chain_tasks(conn)
         console.print("[green]Retried. Check status with `lotad tasks show`.[/green]")
     elif choice == "D":
         with get_engine().begin() as conn:

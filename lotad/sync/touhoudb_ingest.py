@@ -17,23 +17,25 @@ are still created via the supplied ``task_creator`` callback.
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Protocol
 
+import sqlalchemy as sa
 from sqlalchemy import Connection
 
-from lotad.db.models import TaskType
+from lotad.db.models import TaskType, original_songs, song_originals, songs
 from lotad.ingestion.mappers import (
     link_album_tracks,
     link_song_originals,
     map_album_to_db,
     map_song_to_db,
 )
-from lotad.ingestion.touhoudb_client import TouhouDBClient
+from lotad.ingestion.touhoudb_client import OriginalChainError, TouhouDBClient
 from lotad.ingestion.touhoudb_models import SongDetail
 from lotad.ingestion.youtube_client import PlaylistItem
+from lotad.tasks.manager import create_task_idempotent
 
-logger = logging.getLogger(__name__)
+# Differences above 20% usually indicate a wrong match rather than silence or an intro.
+_DURATION_MISMATCH_RATIO = 0.20
 
 
 class TaskCreator(Protocol):
@@ -51,6 +53,31 @@ class TaskCreator(Protocol):
     ) -> None: ...
 
 
+def make_task_creator(auto_created_by: str) -> TaskCreator:
+    """Adapt the pipeline callback order to the task manager's connection-first API."""
+
+    def create_task(
+        task_type: TaskType,
+        title: str,
+        data: dict[str, Any],
+        conn: Connection,
+        *,
+        related_song_id: int | None = None,
+        related_video_id: int | None = None,
+    ) -> None:
+        create_task_idempotent(
+            conn,
+            task_type,
+            title,
+            data,
+            related_song_id=related_song_id,
+            related_video_id=related_video_id,
+            auto_created_by=auto_created_by,
+        )
+
+    return create_task
+
+
 async def apply_touhoudb_detail(
     detail: SongDetail,
     conn: Connection,
@@ -61,58 +88,24 @@ async def apply_touhoudb_detail(
     integrity_item: PlaylistItem | None = None,
     is_composite: bool = False,
 ) -> int:
-    """
-    Map a TouhouDB ``SongDetail`` into the LOTAD database.
-
-    Returns the internal ``songs.id``.  Idempotent — re-running with the same
-    detail overwrites TouhouDB-sourced fields and replaces ``song_artists`` /
-    ``song_tags`` / ``song_languages``.
-
-    Args:
-        detail: TouhouDB song detail (output of ``tdb.get_song`` or similar).
-        conn: open SQLAlchemy connection (caller manages the transaction).
-        tdb: TouhouDB client for fetching album detail and resolving the
-            original chain.
-        create_task: callback for creating tasks (FILL_MISSING_INFO,
-            SUSPICIOUS_METADATA, MISSING_LYRICIST).  If None, those tasks
-            are skipped — useful for metadata refresh where we don't want
-            to spam the task queue with already-known issues.
-        integrity_yt_video_id: youtube_videos.id for duration-mismatch checks.
-            If None, integrity checks are skipped.
-        integrity_item: PlaylistItem to compare against detail.lengthSeconds.
-        is_composite: when True, suppresses duration mismatch (the video
-            covers many songs so a single-song duration always mismatches).
-    """
+    """Apply upstream metadata and complete original sets in the caller's transaction."""
     song_id = map_song_to_db(detail, conn)
 
+    # Let I/O and DB errors reach the caller's transaction boundary: a partially
+    # applied refresh must not be counted as successful.
     for album_summary in detail.albums:
-        try:
-            album_detail = await tdb.get_album(album_summary.id)
-            album_db_id = map_album_to_db(album_detail, conn)
-            link_album_tracks(album_db_id, album_detail, conn)
-        except Exception:
-            logger.exception(
-                "Failed to ingest album touhoudb_id=%d for song %d — skipping",
-                album_summary.id,
-                song_id,
-            )
+        album_detail = await tdb.get_album(album_summary.id)
+        album_db_id = map_album_to_db(album_detail, conn)
+        link_album_tracks(album_db_id, album_detail, conn)
 
+    original_ids = []
     if detail.originalVersionId is not None:
-        try:
-            original_ids = await tdb.resolve_original_chain(detail.id)
-            linked = link_song_originals(song_id, original_ids, conn)
-            if not linked and create_task is not None:
-                create_task(
-                    TaskType.FILL_MISSING_INFO,
-                    f"Original song chain not in DB for song {song_id}",
-                    {"song_id": song_id, "original_touhoudb_ids": original_ids},
-                    conn,
-                    related_song_id=song_id,
-                )
-        except Exception:
-            logger.exception("resolve_original_chain failed for song %d", song_id)
+        original_ids = list(dict.fromkeys(await tdb.resolve_original_chain(detail.id, strict=True)))
+        if not original_ids:
+            raise OriginalChainError(f"No originals resolved for song {detail.id}")
+    _reconcile_originals(song_id, original_ids, conn, create_task=create_task)
 
-    if create_task is not None and integrity_yt_video_id is not None:
+    if create_task is not None:
         _run_integrity_checks(
             detail,
             song_id,
@@ -126,23 +119,73 @@ async def apply_touhoudb_detail(
     return song_id
 
 
+def _reconcile_originals(
+    song_id: int,
+    original_ids: list[int],
+    conn: Connection,
+    *,
+    create_task: TaskCreator | None,
+) -> None:
+    """Replace upstream links only when every resolved original is catalogued."""
+    before = set(
+        conn.execute(
+            sa.select(song_originals.c.original_song_id).where(song_originals.c.song_id == song_id)
+        ).scalars()
+    )
+    catalogued = set(
+        conn.execute(
+            sa.select(original_songs.c.touhoudb_id).where(
+                original_songs.c.touhoudb_id.in_(original_ids)
+            )
+        ).scalars()
+    )
+    missing = sorted(set(original_ids) - catalogued)
+    linked = link_song_originals(song_id, original_ids, conn)
+    if missing:
+        if create_task is not None:
+            create_task(
+                TaskType.FILL_MISSING_INFO,
+                f"Original song chain not in DB for song {song_id}",
+                {"song_id": song_id, "original_touhoudb_ids": missing},
+                conn,
+                related_song_id=song_id,
+            )
+    else:
+        conn.execute(
+            song_originals.delete().where(
+                song_originals.c.song_id == song_id,
+                song_originals.c.is_manual.is_(False),
+                song_originals.c.original_song_id.not_in(linked),
+            )
+        )
+    after = set(
+        conn.execute(
+            sa.select(song_originals.c.original_song_id).where(song_originals.c.song_id == song_id)
+        ).scalars()
+    )
+    if before != after:
+        conn.execute(songs.update().where(songs.c.id == song_id).values(updated_at=sa.func.now()))
+
+
 def _run_integrity_checks(
     detail: SongDetail,
     song_id: int,
-    yt_video_id: int,
+    yt_video_id: int | None,
     item: PlaylistItem | None,
     conn: Connection,
     *,
     create_task: TaskCreator,
     is_composite: bool,
 ) -> None:
-    """Mirror of ``IngestPipeline._integrity_checks``."""
+    """Check upstream metadata consistently during ingestion and refresh."""
     if (
         not is_composite
+        and yt_video_id is not None
         and item is not None
         and detail.lengthSeconds
         and item.duration_seconds
-        and abs(detail.lengthSeconds - item.duration_seconds) / max(detail.lengthSeconds, 1) > 0.20
+        and abs(detail.lengthSeconds - item.duration_seconds) / max(detail.lengthSeconds, 1)
+        > _DURATION_MISMATCH_RATIO
     ):
         create_task(
             TaskType.SUSPICIOUS_METADATA,
@@ -155,6 +198,7 @@ def _run_integrity_checks(
             },
             conn,
             related_song_id=song_id,
+            related_video_id=yt_video_id,
         )
 
     if detail.has_lyrics:

@@ -20,6 +20,8 @@ identify what the song probably was so it can be manually added to the DB.
 | `position` | 0-based index of this video in the YouTube playlist |
 | `playlist_db_id` | Internal `playlists.id` the video belongs to (nullable if ingested outside a playlist) |
 | `note` | Static explanation string |
+| `playlist_song_id` / `playlist_song_ids` | Association(s) affected by sync, including every track of composite videos |
+| `source_playlist_db_id` | Source playlist for validating removal actions |
 
 ### Step 1 — Get playlist info
 
@@ -95,26 +97,46 @@ Once the song is identified:
 column. Generate the input by running these queries in Supabase and using
 "Export as CSV":
 
-### Eastern Story chain backfill (one-time, M5 leftover)
+### Eastern Story review candidates
 
-Songs ingested before the テーマ・オブ・イースタンストーリー exception in
-`resolve_original_chain` was added.  Their `song_originals` rows link only to
-`original_songs.touhoudb_id = 2445` and are missing the intermediate ZUN
-parent (A Dream More Scarlet Than Red, Snow or Cherry Petal, etc.).
+This query finds songs whose only original link is テーマ・オブ・イースタンストーリー.
+They are candidates for review, not proof of an incorrect mapping.
 
-```sql
+~~~sql
 SELECT s.id AS song_id
 FROM songs s
 JOIN song_originals so ON so.song_id = s.id
-JOIN original_songs o   ON o.id = so.original_song_id
-WHERE o.touhoudb_id = 2445
-  AND s.touhoudb_id IS NOT NULL
+JOIN original_songs o ON o.id = so.original_song_id
+WHERE s.touhoudb_id IS NOT NULL
 GROUP BY s.id
-HAVING COUNT(*) = 1;
-```
+HAVING COUNT(*) = 1 AND BOOL_AND(o.touhoudb_id = 2445);
+~~~
 
-Re-run the metadata refresh after `lotad originals scrape` (so the
-intermediate originals exist in `original_songs`).
+Refresh uses the existing original-chain resolver. It still reads extra source
+references only from the penultimate node, so it does not yet recover all sources
+listed on a medley's own entry. The catalog also excludes some official themes
+typed Arrangement and some non-ZUN composers; rerunning the existing scraper
+does not fill those gaps. Resolver and catalog improvements are separate work.
+
+### Refresh semantics and migrations
+
+Run Alembic through revision 0015 before using this branch. A complete successful
+resolution replaces upstream original links, including clearing them when
+TouhouDB removes the original version. Manual links marked
+song_originals.is_manual = TRUE survive refresh, as do links extracted for stubs
+and retained during their promotion. The migration marks existing stub links
+as manual; other existing links are treated as upstream, matching the current
+application's write paths. If you inserted overrides directly with SQL on linked
+songs, mark those links is_manual = TRUE before refreshing.
+
+When some resolved IDs are absent from the original catalog, refresh adds the
+known links, preserves existing links, and raises a FILL_MISSING_INFO task for
+the missing IDs. Add the missing originals and refresh that song again to replace
+the old upstream set. Failed HTTP requests, cycles, or depth-limited resolution
+roll back the song's refresh and increment the error count.
+
+Revision 0015 allows independent dropped-video tasks for the same upload in\ndifferent playlists while retaining one open task per upload and playlist.\n\nPlaylist sync does not refresh metadata for every existing linked song. An
+upstream correction requires an explicit refresh-metadata run.
 
 ### Other one-off pulls
 

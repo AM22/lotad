@@ -334,6 +334,7 @@ class IngestPipeline:
                         "title": item.title,
                         "position": item.position,
                         "playlist_db_id": playlist_db_id,
+                        "source_playlist_db_id": playlist_db_id,
                         "note": (
                             "YouTube returned a deleted/private stub; video is no longer accessible"
                         ),
@@ -545,15 +546,31 @@ class IngestPipeline:
         self,
         task_type: TaskType,
         title: str,
-        data: dict,
+        data: dict[str, Any],
         conn: Connection,
         *,
         related_song_id: int | None = None,
         related_video_id: int | None = None,
     ) -> None:
-        """Create a task row; idempotent — skips if an OPEN task of same type+song/video exists."""
+        """Upsert task context using the same identity as the partial unique indexes."""
         dedup_filter = None
-        if related_song_id is not None:
+        if task_type == TaskType.DROPPED_VIDEO and related_video_id is not None:
+            source_playlist_id = data.get("source_playlist_db_id") or data.get("playlist_db_id")
+            dedup_filter = sa.and_(
+                tasks.c.task_type == task_type,
+                tasks.c.related_video_id == related_video_id,
+                tasks.c.status == TaskStatus.OPEN,
+                sa.cast(
+                    sa.func.coalesce(
+                        tasks.c.data["source_playlist_db_id"].as_string(),
+                        tasks.c.data["playlist_db_id"].as_string(),
+                        "",
+                    ),
+                    sa.Text,
+                )
+                == (str(source_playlist_id) if source_playlist_id is not None else ""),
+            )
+        elif related_song_id is not None:
             dedup_filter = sa.and_(
                 tasks.c.task_type == task_type,
                 tasks.c.related_song_id == related_song_id,
@@ -565,16 +582,9 @@ class IngestPipeline:
                 tasks.c.related_video_id == related_video_id,
                 tasks.c.status == TaskStatus.OPEN,
             )
-        if dedup_filter is not None:
-            existing = conn.execute(sa.select(tasks.c.id).where(dedup_filter)).first()
-            if existing:
-                conn.execute(
-                    tasks.update().where(tasks.c.id == existing[0]).values(title=title, data=data)
-                )
-                return
-
-        conn.execute(
-            tasks.insert().values(
+        inserted = conn.execute(
+            pg_insert(tasks)
+            .values(
                 task_type=task_type,
                 title=title,
                 data=data,
@@ -582,7 +592,24 @@ class IngestPipeline:
                 related_video_id=related_video_id,
                 auto_created_by="ingest_pipeline",
             )
-        )
+            .on_conflict_do_nothing()
+            .returning(tasks.c.id)
+        ).scalar_one_or_none()
+        if inserted is None and dedup_filter is not None:
+            existing = (
+                conn.execute(
+                    sa.select(tasks.c.id, tasks.c.data).where(dedup_filter).with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                # Preserve association IDs recorded by sync when refreshing an ingestion task.
+                conn.execute(
+                    tasks.update()
+                    .where(tasks.c.id == existing["id"])
+                    .values(title=title, data=dict(existing["data"] or {}) | data)
+                )
 
     def _create_ingest_failed_task(self, item: PlaylistItem) -> None:
         """Create an INGEST_FAILED task outside a transaction (best-effort)."""

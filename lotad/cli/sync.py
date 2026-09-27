@@ -45,7 +45,10 @@ def sync() -> None:
     help="Opportunistically re-match stub songs against TouhouDB after sync. Default: on.",
 )
 @click.option(
-    "--limit", default=None, type=int, help="Stop after N videos per playlist (for testing)."
+    "--limit",
+    default=None,
+    type=click.IntRange(min=1),
+    help="Inspect at most N videos per playlist; skip removals and cross-playlist moves.",
 )
 def sync_playlist(playlist: str, retry_stubs: bool, limit: int | None) -> None:
     """Sync a single playlist by name or YouTube playlist ID."""
@@ -67,7 +70,10 @@ def sync_playlist(playlist: str, retry_stubs: bool, limit: int | None) -> None:
     help="Opportunistically re-match stub songs against TouhouDB after sync. Default: on.",
 )
 @click.option(
-    "--limit", default=None, type=int, help="Stop after N videos per playlist (for testing)."
+    "--limit",
+    default=None,
+    type=click.IntRange(min=1),
+    help="Inspect at most N videos per playlist; skip removals and cross-playlist moves.",
 )
 def sync_all(retry_stubs: bool, limit: int | None) -> None:
     """Sync every tracked playlist."""
@@ -100,6 +106,7 @@ def _print_sync_report(report: SyncReport) -> None:
     table.add_column("Playlist")
     table.add_column("Kept", justify="right")
     table.add_column("Added", justify="right")
+    table.add_column("Unmatched", justify="right")
     table.add_column("Moved in", justify="right")
     table.add_column("Moved out", justify="right")
     table.add_column("Same-song swap", justify="right")
@@ -113,6 +120,7 @@ def _print_sync_report(report: SyncReport) -> None:
             name,
             str(outcome.kept),
             str(outcome.added),
+            str(outcome.unmatched),
             str(outcome.moved_in),
             str(outcome.moved_out),
             str(outcome.same_song_swap),

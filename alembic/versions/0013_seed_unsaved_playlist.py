@@ -1,4 +1,4 @@
-"""Seed the unsaved playlist (id 6) and add it to all scoring configurations
+"""Seed the unsaved playlist and add it to all scoring configurations
 
 The `unsaved` playlist is the M7/M8 anchor for "listened but consciously not
 kept". M7 sync moves dropped playlist 3 / eval entries here silently; future
@@ -10,6 +10,8 @@ Revision ID: 0013
 Revises: 0012
 Create Date: 2026-05-02
 """
+
+from __future__ import annotations
 
 from alembic import op
 

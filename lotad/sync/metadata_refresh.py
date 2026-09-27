@@ -18,19 +18,23 @@ from __future__ import annotations
 
 import csv
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import httpx
 import sqlalchemy as sa
+from pydantic import ValidationError
 from sqlalchemy import Connection
+from sqlalchemy.exc import SQLAlchemyError
 
 from lotad.config import Settings, get_settings
-from lotad.db.models import SongType, song_artists, songs
+from lotad.db.models import SongRole, SongType, playlist_songs, song_artists, songs, youtube_videos
 from lotad.db.session import get_engine
-from lotad.ingestion.touhoudb_client import TouhouDBClient
+from lotad.ingestion.http_client import CircuitBreakerOpen
+from lotad.ingestion.touhoudb_client import OriginalChainError, TouhouDBClient
 from lotad.sync.stub_retry import retry_stub_song
-from lotad.sync.touhoudb_ingest import apply_touhoudb_detail
-from lotad.tasks.manager import create_task_idempotent
+from lotad.sync.touhoudb_ingest import apply_touhoudb_detail, make_task_creator
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +57,6 @@ def select_songs_for_filter(name: str, conn: Connection) -> list[int]:
     """Return song IDs matching a named filter preset."""
     if name == "missing-lyricist":
         # has_lyrics=true AND no LYRICIST row in song_artists.
-        from lotad.db.models import SongRole
-
         lyricist_subq = sa.select(song_artists.c.song_id).where(
             song_artists.c.role == SongRole.LYRICIST
         )
@@ -116,7 +118,7 @@ async def refresh_songs(
     *,
     settings: Settings | None = None,
     dry_run: bool = False,
-    progress_callback: object | None = None,
+    progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> RefreshReport:
     """Re-fetch TouhouDB data for each song in ``song_ids`` and re-apply.
 
@@ -135,8 +137,10 @@ async def refresh_songs(
     async with TouhouDBClient.from_settings(settings) as tdb:
         for idx, song_id in enumerate(song_ids):
             if progress_callback is not None:
-                progress_callback(idx, len(song_ids), song_id)  # type: ignore[operator]
+                progress_callback(idx, len(song_ids), song_id)
 
+            refreshed = False
+            promoted_id: int | None = None
             try:
                 with engine.begin() as conn:
                     row = conn.execute(
@@ -161,19 +165,13 @@ async def refresh_songs(
                             detail,
                             conn,
                             tdb,
-                            create_task=lambda *args, **kwargs: create_task_idempotent(
-                                conn, *args, auto_created_by="metadata_refresh", **kwargs
-                            ),
+                            create_task=make_task_creator("metadata_refresh"),
                         )
-                        report.refreshed += 1
-                        report.refreshed_song_ids.append(song_id)
+                        refreshed = True
                     elif row.song_type != SongType.ORIGINAL:
                         if dry_run:
                             report.stub_unchanged += 1
                             continue
-                        # Pull associated videos for this stub
-                        from lotad.db.models import playlist_songs, youtube_videos
-
                         vids = [
                             r[0]
                             for r in conn.execute(
@@ -198,15 +196,26 @@ async def refresh_songs(
                             continue
                         result = await retry_stub_song(song_id, vids, conn, tdb)
                         if result is not None:
-                            report.stub_promoted += 1
-                            report.promoted_song_ids.append(result)
+                            promoted_id = result
                         else:
                             report.stub_unchanged += 1
                     else:
                         # Stub but ORIGINAL song_type — no upstream to refresh
                         logger.debug("song_id=%d is stub-original; nothing to refresh", song_id)
                         report.skipped_no_upstream += 1
-            except Exception:
+                if refreshed:
+                    report.refreshed += 1
+                    report.refreshed_song_ids.append(song_id)
+                if promoted_id is not None:
+                    report.stub_promoted += 1
+                    report.promoted_song_ids.append(promoted_id)
+            except (
+                httpx.HTTPError,
+                ValidationError,
+                SQLAlchemyError,
+                CircuitBreakerOpen,
+                OriginalChainError,
+            ):
                 logger.exception("Refresh failed for song_id=%d", song_id)
                 report.errors += 1
 
