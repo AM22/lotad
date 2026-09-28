@@ -172,6 +172,59 @@ def list_unenriched_ingest_failed(
 
 
 # ---------------------------------------------------------------------------
+# Creation
+# ---------------------------------------------------------------------------
+
+
+def create_task_idempotent(
+    conn: Connection,
+    task_type: TaskType,
+    title: str,
+    data: dict[str, Any],
+    *,
+    related_song_id: int | None = None,
+    related_video_id: int | None = None,
+    auto_created_by: str = "lotad",
+) -> None:
+    """Insert a task row, skipping if an OPEN task of same type+song/video exists.
+
+    On a duplicate hit, updates the existing task's title/data so the most
+    recent context wins.  Mirrors the contract used by ``IngestPipeline``.
+    """
+    dedup_filter = None
+    if related_song_id is not None:
+        dedup_filter = sa.and_(
+            tasks.c.task_type == task_type,
+            tasks.c.related_song_id == related_song_id,
+            tasks.c.status == TaskStatus.OPEN,
+        )
+    elif related_video_id is not None:
+        dedup_filter = sa.and_(
+            tasks.c.task_type == task_type,
+            tasks.c.related_video_id == related_video_id,
+            tasks.c.status == TaskStatus.OPEN,
+        )
+    if dedup_filter is not None:
+        existing = conn.execute(sa.select(tasks.c.id).where(dedup_filter)).first()
+        if existing:
+            conn.execute(
+                tasks.update().where(tasks.c.id == existing[0]).values(title=title, data=data)
+            )
+            return
+
+    conn.execute(
+        tasks.insert().values(
+            task_type=task_type,
+            title=title,
+            data=data,
+            related_song_id=related_song_id,
+            related_video_id=related_video_id,
+            auto_created_by=auto_created_by,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # Update functions
 # ---------------------------------------------------------------------------
 

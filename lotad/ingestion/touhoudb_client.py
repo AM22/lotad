@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from lotad.config import Settings
@@ -112,6 +113,10 @@ def _extract_additional_original_ids(detail: SongDetail) -> set[int]:
                 ids.add(int(m.group(1)))
 
     return ids
+
+
+class OriginalChainError(ValueError):
+    """An incomplete original chain cannot safely replace existing links."""
 
 
 class TouhouDBClient:
@@ -242,7 +247,7 @@ class TouhouDBClient:
         data = await self._get(f"/songs/{song_id}", fields=fields, lang="Default")
         return SongDetail.model_validate(data)
 
-    async def _fetch_song_notes(self, song_id: int) -> SongNotes | None:
+    async def _fetch_song_notes(self, song_id: int, *, strict: bool = False) -> SongNotes | None:
         """
         Fetch a song's notes via the ``/api/songs/{id}/for-edit`` endpoint.
 
@@ -259,16 +264,22 @@ class TouhouDBClient:
         try:
             data = await self._get(f"/songs/{song_id}/for-edit")
         except httpx.HTTPStatusError:
+            if strict:
+                raise
             logger.debug("Could not fetch for-edit data for song %d", song_id)
             return None
 
+        if strict and not isinstance(data, dict):
+            raise OriginalChainError(f"Invalid notes response for song {song_id}")
         notes_data = data.get("notes") if isinstance(data, dict) else None
         if not notes_data:
             return None
 
         try:
             return SongNotes.model_validate(notes_data)
-        except Exception:
+        except ValidationError:
+            if strict:
+                raise
             logger.debug("Could not parse notes for song %d", song_id)
             return None
 
@@ -290,6 +301,8 @@ class TouhouDBClient:
         _depth: int = 0,
         max_depth: int = 10,
         _parent_detail: SongDetail | None = None,
+        strict: bool = False,
+        _active: frozenset[int] = frozenset(),
     ) -> list[int]:
         """
         Recursively follow ``originalVersionId`` links to all leaf originals.
@@ -316,10 +329,15 @@ class TouhouDBClient:
               collect the results.
         3. Deduplicate via ``_visited`` / ``queued`` throughout.
 
-        Returns a list of TouhouDB song IDs that are the leaf ZUN originals.
+        Returns leaf IDs and Eastern Story co-originals. Strict mode rejects
+        incomplete chains so callers can safely reconcile existing links.
         """
         if _visited is None:
             _visited = frozenset()
+
+        if strict and song_id in _active:
+            raise OriginalChainError(f"Cycle in original chain at song {song_id}")
+        _active = _active | {song_id}
 
         if song_id in _visited:
             # Already accounted for in this traversal (e.g. an alternate version
@@ -328,6 +346,8 @@ class TouhouDBClient:
             return []
 
         if _depth >= max_depth:
+            if strict:
+                raise OriginalChainError(f"Original chain exceeded depth {max_depth} at {song_id}")
             logger.warning(
                 "Original chain for song %d: max depth reached at depth %d",
                 song_id,
@@ -339,6 +359,8 @@ class TouhouDBClient:
             detail = await self.get_song(song_id, fields=_CHAIN_FIELDS)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
+                if strict:
+                    raise OriginalChainError(f"Original song {song_id} returned 404") from exc
                 return [song_id]
             raise
 
@@ -360,7 +382,9 @@ class TouhouDBClient:
                 # via the for-edit endpoint so we can find touhoudb.com/S/<id>
                 # links that encode additional originals in medleys/mashups.
                 if _parent_detail.notes is None:
-                    _parent_detail.notes = await self._fetch_song_notes(_parent_detail.id)
+                    _parent_detail.notes = await self._fetch_song_notes(
+                        _parent_detail.id, strict=strict
+                    )
 
                 extra_ids = _extract_additional_original_ids(_parent_detail)
                 extra_ids.discard(song_id)  # already have this one
@@ -382,10 +406,12 @@ class TouhouDBClient:
                             _visited=new_visited,
                             _depth=_depth + 1,
                             max_depth=max_depth,
+                            strict=strict,
+                            _active=frozenset(),
                             # No _parent_detail — each branch resolves independently
                         )
                     except httpx.HTTPStatusError as exc:
-                        if exc.response.status_code == 404:
+                        if exc.response.status_code == 404 and not strict:
                             logger.warning("Extra original ID %d returned 404 — skipping", extra_id)
                             continue
                         raise
@@ -403,6 +429,8 @@ class TouhouDBClient:
             _depth=_depth + 1,
             max_depth=max_depth,
             _parent_detail=detail,
+            strict=strict,
+            _active=_active,
         )
 
     async def bulk_match_playlist(

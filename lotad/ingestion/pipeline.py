@@ -48,15 +48,9 @@ from lotad.db.models import (
 )
 from lotad.db.session import get_engine
 from lotad.ingestion.http_client import CircuitBreakerOpen
-from lotad.ingestion.mappers import (
-    link_album_tracks,
-    link_song_originals,
-    map_album_to_db,
-    map_song_to_db,
-)
 from lotad.ingestion.touhoudb_client import TouhouDBClient
-from lotad.ingestion.touhoudb_models import SongDetail
 from lotad.ingestion.youtube_client import PlaylistItem, YouTubeClient
+from lotad.sync.touhoudb_ingest import apply_touhoudb_detail
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +334,7 @@ class IngestPipeline:
                         "title": item.title,
                         "position": item.position,
                         "playlist_db_id": playlist_db_id,
+                        "source_playlist_db_id": playlist_db_id,
                         "note": (
                             "YouTube returned a deleted/private stub; video is no longer accessible"
                         ),
@@ -405,54 +400,6 @@ class IngestPipeline:
                 )
                 return False
 
-            # 3. Map song to DB
-            song_id = map_song_to_db(song_detail, conn)
-
-            # 3.5. Ingest albums this song appears on
-            for album_summary in song_detail.albums:
-                try:
-                    album_detail = await self._tdb.get_album(album_summary.id)
-                    album_db_id = map_album_to_db(album_detail, conn)
-                    n_linked = link_album_tracks(album_db_id, album_detail, conn)
-                    logger.debug(
-                        "Ingested album touhoudb_id=%d %r — linked %d tracks",
-                        album_summary.id,
-                        album_summary.name,
-                        n_linked,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to ingest album touhoudb_id=%d for song %d — skipping",
-                        album_summary.id,
-                        song_id,
-                    )
-
-            # 4. Resolve original chain + link
-            # Start the chain at the song itself, not at originalVersionId.
-            # resolve_original_chain needs to pass song_detail as _parent_detail
-            # when it recurses into the direct parent, so that the penultimate-node
-            # scan for extra originals (medleys encoded in notes/webLinks) fires
-            # with the correct context.  Starting at originalVersionId skips the
-            # song entirely, leaving _parent_detail=None at the leaf.
-            if song_detail.originalVersionId is not None:
-                try:
-                    original_ids = await self._tdb.resolve_original_chain(song_detail.id)
-                    linked = link_song_originals(song_id, original_ids, conn)
-                    if not linked:
-                        # Original song not seeded yet
-                        self._create_task(
-                            TaskType.FILL_MISSING_INFO,
-                            f"Original song chain not in DB for song {song_id}",
-                            {
-                                "song_id": song_id,
-                                "original_touhoudb_ids": original_ids,
-                            },
-                            conn,
-                            related_song_id=song_id,
-                        )
-                except Exception:
-                    logger.exception("resolve_original_chain failed for song %d", song_id)
-
             # Determine composite flag: prefer explicit hint over heuristic.
             # Used by both integrity checks (suppress duration mismatch) and
             # the playlist_songs source_type assignment below.
@@ -462,9 +409,15 @@ class IngestPipeline:
                 else is_album_video(item)
             )
 
-            # 5. Integrity checks
-            self._integrity_checks(
-                song_detail, song_id, yt_video_id, item, conn, is_composite=is_composite
+            # 3-5. Map song + albums + originals + integrity (shared with sync/refresh)
+            song_id = await apply_touhoudb_detail(
+                song_detail,
+                conn,
+                self._tdb,
+                create_task=self._create_task,
+                integrity_yt_video_id=yt_video_id,
+                integrity_item=item,
+                is_composite=is_composite,
             )
 
             # 6. Create playlist_songs row (if playlist known)
@@ -593,15 +546,31 @@ class IngestPipeline:
         self,
         task_type: TaskType,
         title: str,
-        data: dict,
+        data: dict[str, Any],
         conn: Connection,
         *,
         related_song_id: int | None = None,
         related_video_id: int | None = None,
     ) -> None:
-        """Create a task row; idempotent — skips if an OPEN task of same type+song/video exists."""
+        """Upsert task context using the same identity as the partial unique indexes."""
         dedup_filter = None
-        if related_song_id is not None:
+        if task_type == TaskType.DROPPED_VIDEO and related_video_id is not None:
+            source_playlist_id = data.get("source_playlist_db_id") or data.get("playlist_db_id")
+            dedup_filter = sa.and_(
+                tasks.c.task_type == task_type,
+                tasks.c.related_video_id == related_video_id,
+                tasks.c.status == TaskStatus.OPEN,
+                sa.cast(
+                    sa.func.coalesce(
+                        tasks.c.data["source_playlist_db_id"].as_string(),
+                        tasks.c.data["playlist_db_id"].as_string(),
+                        "",
+                    ),
+                    sa.Text,
+                )
+                == (str(source_playlist_id) if source_playlist_id is not None else ""),
+            )
+        elif related_song_id is not None:
             dedup_filter = sa.and_(
                 tasks.c.task_type == task_type,
                 tasks.c.related_song_id == related_song_id,
@@ -613,16 +582,9 @@ class IngestPipeline:
                 tasks.c.related_video_id == related_video_id,
                 tasks.c.status == TaskStatus.OPEN,
             )
-        if dedup_filter is not None:
-            existing = conn.execute(sa.select(tasks.c.id).where(dedup_filter)).first()
-            if existing:
-                conn.execute(
-                    tasks.update().where(tasks.c.id == existing[0]).values(title=title, data=data)
-                )
-                return
-
-        conn.execute(
-            tasks.insert().values(
+        inserted = conn.execute(
+            pg_insert(tasks)
+            .values(
                 task_type=task_type,
                 title=title,
                 data=data,
@@ -630,7 +592,24 @@ class IngestPipeline:
                 related_video_id=related_video_id,
                 auto_created_by="ingest_pipeline",
             )
-        )
+            .on_conflict_do_nothing()
+            .returning(tasks.c.id)
+        ).scalar_one_or_none()
+        if inserted is None and dedup_filter is not None:
+            existing = (
+                conn.execute(
+                    sa.select(tasks.c.id, tasks.c.data).where(dedup_filter).with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                # Preserve association IDs recorded by sync when refreshing an ingestion task.
+                conn.execute(
+                    tasks.update()
+                    .where(tasks.c.id == existing["id"])
+                    .values(title=title, data=dict(existing["data"] or {}) | data)
+                )
 
     def _create_ingest_failed_task(self, item: PlaylistItem) -> None:
         """Create an INGEST_FAILED task outside a transaction (best-effort)."""
@@ -649,49 +628,3 @@ class IngestPipeline:
                 )
         except Exception:
             logger.exception("Could not create INGEST_FAILED task for %s", item.video_id)
-
-    def _integrity_checks(
-        self,
-        detail: SongDetail,
-        song_id: int,
-        yt_video_id: int,
-        item: PlaylistItem,
-        conn: Connection,
-        *,
-        is_composite: bool = False,
-    ) -> None:
-        """Run metadata integrity checks; create tasks on violations."""
-        # Duration mismatch: >20% difference.
-        # Suppressed for composite videos — the video duration covers many songs
-        # so it will always mismatch the single-song TouhouDB duration.
-        if (
-            not is_composite
-            and detail.lengthSeconds
-            and item.duration_seconds
-            and abs(detail.lengthSeconds - item.duration_seconds) / max(detail.lengthSeconds, 1)
-            > 0.20
-        ):
-            self._create_task(
-                TaskType.SUSPICIOUS_METADATA,
-                f"Duration mismatch for song {song_id}: "
-                f"TouhouDB={detail.lengthSeconds}s YT={item.duration_seconds}s",
-                {
-                    "song_id": song_id,
-                    "touhoudb_duration": detail.lengthSeconds,
-                    "youtube_duration": item.duration_seconds,
-                },
-                conn,
-                related_song_id=song_id,
-            )
-
-        # Missing lyricist
-        if detail.has_lyrics:
-            has_lyricist = any("Lyricist" in c.role_list for c in detail.artists)
-            if not has_lyricist:
-                self._create_task(
-                    TaskType.MISSING_LYRICIST,
-                    f"Song {song_id} has lyrics but no lyricist credited",
-                    {"song_id": song_id},
-                    conn,
-                    related_song_id=song_id,
-                )

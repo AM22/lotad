@@ -534,6 +534,8 @@ song_originals = sa.Table(
         sa.ForeignKey("original_songs.id"),
         nullable=False,
     ),
+    # Manual and LLM-sourced links survive replacement of upstream originals.
+    sa.Column("is_manual", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.PrimaryKeyConstraint("song_id", "original_song_id"),
 )
 
