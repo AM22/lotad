@@ -1,17 +1,4 @@
-"""Continuous playlist sync.
-
-Diffs each tracked YouTube playlist against ``playlist_songs``, then routes
-each change through one of the documented outcomes.  See plan
-``it-s-a-bit-out-tidy-shore.md`` for the full decision tree.
-
-Phases per run:
-    1. Diff           — fetch YT, snapshot DB, compute added/removed/kept sets.
-    2. Move resolution — collapse cross-playlist moves before any ingest fires.
-    3. Add            — ingest remaining net-new videos via IngestPipeline.
-    4. Remove         — walk the decision tree for remaining removed items.
-    5. Dedup-task reconciliation — auto-resolve stale DEDUPLICATE_SONGS tasks.
-    6. Stub retry     — opportunistically re-match stub songs (default-on).
-"""
+"""Reconcile playlist membership, video availability, and review tasks."""
 
 from __future__ import annotations
 
@@ -47,8 +34,8 @@ from lotad.sync.stub_retry import iter_retry_candidates, retry_stub_song
 logger = logging.getLogger(__name__)
 
 
-# Playlists whose drops are silently moved to ``unsaved`` (case 4 in the
-# decision tree).  Anything else creates a DROPPED_VIDEO task.
+# Missing entries from playlist 3 / eval imply a listening decision once
+# moves, replacement uploads, and known-unavailable entries are accounted for.
 _LOW_TIER_DISPLAY_ORDERS = (4, 5)
 _UNSAVED_DISPLAY_ORDER = 6
 
@@ -140,7 +127,6 @@ class _PlaylistSyncer:
         report = SyncReport()
         targets = self._resolve_targets(playlist_ids)
 
-        # Phase 1 — diff per playlist
         snapshots: dict[int, _PlaylistSnapshot] = {}
         diffs: dict[int, _Diff] = {}
         for tgt in targets:
@@ -159,15 +145,12 @@ class _PlaylistSyncer:
         if not snapshots:
             return report
 
-        # Phase 1b — bulk update last_checked_at for kept rows + handle in-place
-        # availability transitions (kept-but-now-unavailable).
         for pid, snap in snapshots.items():
             self._update_kept_videos(snap, diffs[pid], report.per_playlist[snap.playlist_name])
 
-        # Phase 2 — cross-playlist move resolution
+        # Resolve moves before ingestion can reuse or create association rows.
         self._resolve_cross_playlist_moves(snapshots, diffs, report)
 
-        # Phase 3 — ingest remaining adds
         async with IngestPipeline(self._settings) as pipeline:
             for pid, snap in snapshots.items():
                 outcome = report.per_playlist[snap.playlist_name]
@@ -193,16 +176,14 @@ class _PlaylistSyncer:
                         )
                         outcome.errors += 1
 
-        # Phase 4 — process remaining removals
+        # Ingest replacements first so removals can recognize the surviving song.
         for pid, snap in snapshots.items():
             outcome = report.per_playlist[snap.playlist_name]
             for video_id in list(diffs[pid].removed_video_ids):
                 self._handle_removal(snap, video_id, outcome)
 
-        # Phase 5 — reconcile stale DEDUPLICATE_SONGS tasks
         report.dedup_tasks_reconciled = self._reconcile_dedup_tasks()
 
-        # Phase 6 — stub retry
         if self._retry_stubs:
             async with TouhouDBClient.from_settings(self._settings) as tdb:
                 report.stub_promoted, report.stub_no_match = await self._run_stub_retry(tdb)
@@ -351,11 +332,7 @@ class _PlaylistSyncer:
         diffs: dict[int, _Diff],
         report: SyncReport,
     ) -> None:
-        """Phase 2: collapse video_ids that appear in both an added and removed set.
-
-        These are user-initiated moves between playlists.  Update playlist_id
-        in place; skip the add and remove phases for them.
-        """
+        """Apply cross-playlist moves atomically before additions and removals."""
         added_index: dict[str, list[int]] = {}
         for pid, diff in diffs.items():
             for vid in diff.added_video_ids:
@@ -487,8 +464,8 @@ class _PlaylistSyncer:
                     or current["playlist_id"] != snap.playlist_db_id
                     or current["song_id"] != db_row["song_id"]
                 ):
-                    # Phase 3 can reuse the same active row for a replacement
-                    # upload. The old snapshot must never remove that new row.
+                    # Ingestion can reuse this row for a replacement upload;
+                    # the snapshot must still match before removing it.
                     outcome.same_song_swap += 1
                     continue
 
@@ -554,12 +531,7 @@ class _PlaylistSyncer:
             outcome.task_drop += 1
 
     def _reconcile_dedup_tasks(self) -> int:
-        """Auto-resolve DEDUPLICATE_SONGS tasks whose state no longer holds.
-
-        A dedup task created during phase 3 may have been invalidated by phase 4
-        (e.g. the duplicating row was soft-deleted as a same-song swap).  If the
-        related song now has only one active playlist_songs row, resolve the task.
-        """
+        """Resolve duplicate-song tasks when at most one active association remains."""
         resolved = 0
         with self._engine.begin() as conn:
             open_tasks = list(

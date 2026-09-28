@@ -1,19 +1,4 @@
-"""Shared primitive: apply a TouhouDB ``SongDetail`` to the LOTAD database.
-
-Wraps ``map_song_to_db`` + album-track linking + original-chain resolution +
-integrity checks.  This is the inner core of ``IngestPipeline.ingest_video``
-factored out so it can also be called by:
-
-- ``lotad/sync/metadata_refresh.py`` — re-applies fresh TouhouDB data to an
-  existing song without touching ``playlist_songs``.
-- ``lotad/sync/stub_retry.py`` — lands the canonical row before redirecting a
-  stub's links onto it.
-
-Key difference from ``IngestPipeline.ingest_video``: this helper does NOT
-create ``playlist_songs`` rows or upsert ``youtube_videos``.  The caller is
-responsible for those.  Tasks for missing originals / suspicious metadata
-are still created via the supplied ``task_creator`` callback.
-"""
+"""Apply TouhouDB song metadata, original associations, and review tasks."""
 
 from __future__ import annotations
 
@@ -39,7 +24,7 @@ _DURATION_MISMATCH_RATIO = 0.20
 
 
 class TaskCreator(Protocol):
-    """Signature of the per-pipeline task creator (matches IngestPipeline._create_task)."""
+    """Describe callbacks that create review tasks in the caller’s transaction."""
 
     def __call__(
         self,

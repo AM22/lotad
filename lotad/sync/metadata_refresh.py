@@ -1,18 +1,4 @@
-"""Manual full-metadata refresh: re-pull TouhouDB data for explicit song IDs.
-
-Used to close gaps when upstream TouhouDB data improves (lyrics added,
-credits corrected, original chains amended) or when our schema gains fields
-that need backfilling for already-ingested songs.
-
-The CSV-driven workflow is the primary entry: dump song IDs from a Supabase
-query into a CSV, run ``lotad sync refresh-metadata --csv path``.  Filter
-presets (``--filter missing-lyricist`` etc.) are convenience shortcuts for
-common queries.
-
-Stub-retry (songs with ``touhoudb_id IS NULL``) is delegated to
-``lotad.sync.stub_retry``; this module only handles songs that *already* have
-a TouhouDB linkage.
-"""
+"""Refresh selected songs from TouhouDB and retry unmatched arrangement stubs."""
 
 from __future__ import annotations
 
